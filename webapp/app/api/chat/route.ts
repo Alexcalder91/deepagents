@@ -44,6 +44,7 @@ When NOT to use canvas:
 - Quick answers that fit naturally in chat
 
 To use the canvas, call the create_canvas tool with:
+- reasoning: A brief (5-10 word) explanation of why you're using this tool
 - title: A descriptive title for the document
 - content: The full content to write to the canvas
 
@@ -51,7 +52,7 @@ Write the complete content in one tool call. The content supports basic markdown
 
 Be concise but thorough. Use markdown formatting when helpful.`;
 
-// Define the canvas tool
+// Define the canvas tool with reasoning parameter
 const tools: Anthropic.Tool[] = [
   {
     name: "create_canvas",
@@ -60,6 +61,11 @@ const tools: Anthropic.Tool[] = [
     input_schema: {
       type: "object" as const,
       properties: {
+        reasoning: {
+          type: "string",
+          description:
+            "A brief (5-10 word) explanation of why you're creating this document. E.g., 'Writing blog post about AI trends' or 'Creating project proposal as requested'",
+        },
         title: {
           type: "string",
           description: "The title of the document",
@@ -70,10 +76,22 @@ const tools: Anthropic.Tool[] = [
             "The full content to display in the canvas. Supports markdown formatting.",
         },
       },
-      required: ["title", "content"],
+      required: ["reasoning", "title", "content"],
     },
   },
 ];
+
+// Generate a reasoning message for tool usage
+function getToolReasoning(toolName: string, input: Record<string, unknown>): string {
+  if (toolName === "create_canvas" && input.reasoning) {
+    return input.reasoning as string;
+  }
+  // Default reasoning messages for other tools
+  const defaults: Record<string, string> = {
+    create_canvas: "Creating document for user request",
+  };
+  return defaults[toolName] || "Processing request";
+}
 
 export async function POST(req: Request) {
   try {
@@ -90,6 +108,16 @@ export async function POST(req: Request) {
     const readableStream = new ReadableStream({
       async start(controller) {
         try {
+          // Send initial thinking step
+          const thinkingStep = JSON.stringify({
+            type: "tool_step",
+            id: `step_${Date.now()}`,
+            tool: "thinking",
+            reasoning: "Analyzing request and planning response",
+            status: "running",
+          });
+          controller.enqueue(encoder.encode(`data: ${thinkingStep}\n\n`));
+
           // Initial API call with tools
           const response = await anthropic.messages.create({
             model: "claude-sonnet-4-20250514",
@@ -102,6 +130,14 @@ export async function POST(req: Request) {
             })),
           });
 
+          // Mark thinking as complete
+          const thinkingComplete = JSON.stringify({
+            type: "tool_step_complete",
+            id: `step_${Date.now() - 1}`,
+            tool: "thinking",
+          });
+          controller.enqueue(encoder.encode(`data: ${thinkingComplete}\n\n`));
+
           // Process the response
           for (const block of response.content) {
             if (block.type === "text") {
@@ -109,7 +145,18 @@ export async function POST(req: Request) {
               const data = JSON.stringify({ content: block.text });
               controller.enqueue(encoder.encode(`data: ${data}\n\n`));
             } else if (block.type === "tool_use" && block.name === "create_canvas") {
-              const input = block.input as { title: string; content: string };
+              const input = block.input as { reasoning: string; title: string; content: string };
+              const stepId = `step_${Date.now()}`;
+
+              // Send tool step start with reasoning
+              const toolStep = JSON.stringify({
+                type: "tool_step",
+                id: stepId,
+                tool: "create_canvas",
+                reasoning: getToolReasoning("create_canvas", input),
+                status: "running",
+              });
+              controller.enqueue(encoder.encode(`data: ${toolStep}\n\n`));
 
               // Signal canvas creation
               const createData = JSON.stringify({
@@ -135,6 +182,14 @@ export async function POST(req: Request) {
               // Signal canvas completion
               const doneData = JSON.stringify({ type: "canvas_done" });
               controller.enqueue(encoder.encode(`data: ${doneData}\n\n`));
+
+              // Mark tool step as complete
+              const toolComplete = JSON.stringify({
+                type: "tool_step_complete",
+                id: stepId,
+                tool: "create_canvas",
+              });
+              controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
 
               // Send a chat message about the canvas
               const chatData = JSON.stringify({

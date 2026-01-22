@@ -3,11 +3,13 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import Canvas from "./components/Canvas";
+import ToolTimeline, { ToolStep } from "./components/ToolTimeline";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  toolSteps?: ToolStep[];
 }
 
 interface CanvasState {
@@ -27,6 +29,7 @@ export default function Home() {
     content: "",
     isStreaming: false,
   });
+  const [currentToolSteps, setCurrentToolSteps] = useState<ToolStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -35,7 +38,7 @@ export default function Home() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, currentToolSteps]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,6 +53,7 @@ export default function Home() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
+    setCurrentToolSteps([]);
 
     try {
       const response = await fetch("/api/chat", {
@@ -77,6 +81,7 @@ export default function Home() {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: "",
+        toolSteps: [],
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -93,15 +98,64 @@ export default function Home() {
             if (line.startsWith("data: ")) {
               const data = line.slice(6);
               if (data === "[DONE]") {
-                // Mark canvas as done streaming
+                // Finalize tool steps in the message
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMessage.id
+                      ? { ...m, toolSteps: [...currentToolSteps] }
+                      : m
+                  )
+                );
                 setCanvas((prev) => ({ ...prev, isStreaming: false }));
                 continue;
               }
               try {
                 const parsed = JSON.parse(data);
 
+                // Handle tool step events
+                if (parsed.type === "tool_step") {
+                  const newStep: ToolStep = {
+                    id: parsed.id,
+                    tool: parsed.tool,
+                    reasoning: parsed.reasoning,
+                    status: parsed.status,
+                    timestamp: Date.now(),
+                  };
+                  setCurrentToolSteps((prev) => [...prev, newStep]);
+                  // Also update the message's toolSteps
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessage.id
+                        ? { ...m, toolSteps: [...(m.toolSteps || []), newStep] }
+                        : m
+                    )
+                  );
+                } else if (parsed.type === "tool_step_complete") {
+                  // Mark the step as complete
+                  setCurrentToolSteps((prev) =>
+                    prev.map((step) =>
+                      step.id === parsed.id || step.tool === parsed.tool
+                        ? { ...step, status: "complete" as const }
+                        : step
+                    )
+                  );
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessage.id
+                        ? {
+                            ...m,
+                            toolSteps: (m.toolSteps || []).map((step) =>
+                              step.id === parsed.id || step.tool === parsed.tool
+                                ? { ...step, status: "complete" as const }
+                                : step
+                            ),
+                          }
+                        : m
+                    )
+                  );
+                }
                 // Handle canvas tool use
-                if (parsed.type === "canvas_create") {
+                else if (parsed.type === "canvas_create") {
                   setCanvas({
                     isOpen: true,
                     title: parsed.title || "Untitled Document",
@@ -144,6 +198,7 @@ export default function Home() {
       ]);
     } finally {
       setIsLoading(false);
+      setCurrentToolSteps([]);
       setCanvas((prev) => ({ ...prev, isStreaming: false }));
     }
   };
@@ -230,6 +285,9 @@ export default function Home() {
                           : styles.assistantMessage),
                       }}
                     >
+                      {message.role === "assistant" && message.toolSteps && message.toolSteps.length > 0 && (
+                        <ToolTimeline steps={message.toolSteps} />
+                      )}
                       {message.role === "assistant" ? (
                         <div className="markdown-content">
                           <ReactMarkdown>{message.content}</ReactMarkdown>
@@ -240,14 +298,18 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
-                {isLoading && messages[messages.length - 1]?.role === "user" && (
+                {isLoading && (
                   <div style={{ ...styles.messageRow, justifyContent: "flex-start" }}>
                     <div style={{ ...styles.message, ...styles.assistantMessage }}>
-                      <div style={styles.typingIndicator}>
-                        <span style={styles.dot}></span>
-                        <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
-                        <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
-                      </div>
+                      {currentToolSteps.length > 0 ? (
+                        <ToolTimeline steps={currentToolSteps} />
+                      ) : (
+                        <div style={styles.typingIndicator}>
+                          <span style={styles.dot}></span>
+                          <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
+                          <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
