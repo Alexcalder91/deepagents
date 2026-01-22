@@ -109,12 +109,14 @@ export async function POST(req: Request) {
       async start(controller) {
         try {
           // Send initial thinking step
+          const thinkingStepId = `step_${Date.now()}`;
           const thinkingStep = JSON.stringify({
             type: "tool_step",
-            id: `step_${Date.now()}`,
+            id: thinkingStepId,
             tool: "thinking",
             reasoning: "Analyzing request and planning response",
             status: "running",
+            input: { messages: messages.length },
           });
           controller.enqueue(encoder.encode(`data: ${thinkingStep}\n\n`));
 
@@ -133,8 +135,9 @@ export async function POST(req: Request) {
           // Mark thinking as complete
           const thinkingComplete = JSON.stringify({
             type: "tool_step_complete",
-            id: `step_${Date.now() - 1}`,
+            id: thinkingStepId,
             tool: "thinking",
+            output: `Generated ${response.content.length} content block(s)`,
           });
           controller.enqueue(encoder.encode(`data: ${thinkingComplete}\n\n`));
 
@@ -155,6 +158,7 @@ export async function POST(req: Request) {
                 tool: "create_canvas",
                 reasoning: getToolReasoning("create_canvas", input),
                 status: "running",
+                input: { title: input.title, contentLength: input.content.length },
               });
               controller.enqueue(encoder.encode(`data: ${toolStep}\n\n`));
 
