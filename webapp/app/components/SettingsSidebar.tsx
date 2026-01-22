@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import { usePromptConfig, PromptConfig } from "../contexts/PromptConfigContext";
+import { useChatHistory } from "../contexts/ChatHistoryContext";
 
-type SettingsPage = "main" | "prompts" | "memory";
+type SettingsPage = "main" | "prompts" | "memory" | "history";
 
 interface PromptCategory {
   title: string;
@@ -143,10 +144,13 @@ export default function SettingsSidebar() {
   const [selectedPrompt, setSelectedPrompt] = useState<keyof PromptConfig | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(["Main Agent"]));
   const [memoryFiles, setMemoryFiles] = useState<MemoryFiles>({});
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
   const sidebarRef = useRef<HTMLDivElement>(null);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const { config, updatePrompt, resetPrompt, hasChanges } = usePromptConfig();
+  const { chats, currentChatId, createNewChat, selectChat, deleteChat, renameChat } = useChatHistory();
 
   // Load memory from localStorage
   useEffect(() => {
@@ -277,6 +281,57 @@ export default function SettingsSidebar() {
       {/* Collapsed state - icon bar */}
       <div style={styles.iconBar}>
         <div style={styles.iconBarInner}>
+          {/* New Chat Button */}
+          <button
+            style={styles.iconButton}
+            className="settings-icon-button"
+            onClick={() => {
+              createNewChat();
+            }}
+            title="New Chat"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+          </button>
+
+          {/* Chat History Button */}
+          <button
+            style={styles.iconButton}
+            className="settings-icon-button"
+            onClick={() => {
+              setIsExpanded(true);
+              setCurrentPage("history");
+            }}
+            title="Chat History"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            {chats.length > 0 && (
+              <span style={styles.chatCountBadge}>{chats.length}</span>
+            )}
+          </button>
+
+          {/* Settings Button */}
           <button
             style={styles.iconButton}
             className="settings-icon-button"
@@ -516,6 +571,138 @@ export default function SettingsSidebar() {
           </>
         )}
 
+        {currentPage === "history" && !selectedPrompt && (
+          <>
+            <div style={styles.header}>
+              <button
+                style={styles.backButton}
+                className="settings-back-button"
+                onClick={() => setCurrentPage("main")}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+              </button>
+              <h2 style={styles.title}>Chat History</h2>
+              <button
+                style={styles.newChatButton}
+                className="settings-new-chat-button"
+                onClick={() => {
+                  createNewChat();
+                  setIsExpanded(false);
+                }}
+                title="New Chat"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M12 5v14M5 12h14"></path>
+                </svg>
+                New
+              </button>
+            </div>
+
+            <div style={styles.chatHistoryContainer}>
+              {chats.length === 0 ? (
+                <div style={styles.memoryEmpty}>
+                  <span style={styles.memoryEmptyIcon}>💬</span>
+                  <p style={styles.memoryEmptyText}>No chat history yet</p>
+                  <p style={styles.memoryEmptyHint}>
+                    Start a new conversation to see it here.
+                  </p>
+                </div>
+              ) : (
+                chats.map((chat) => (
+                  <div
+                    key={chat.id}
+                    style={{
+                      ...styles.chatHistoryItem,
+                      ...(chat.id === currentChatId ? styles.chatHistoryItemActive : {}),
+                    }}
+                    className="chat-history-item"
+                  >
+                    {editingChatId === chat.id ? (
+                      <input
+                        type="text"
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        onBlur={() => {
+                          if (editingTitle.trim()) {
+                            renameChat(chat.id, editingTitle.trim());
+                          }
+                          setEditingChatId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            if (editingTitle.trim()) {
+                              renameChat(chat.id, editingTitle.trim());
+                            }
+                            setEditingChatId(null);
+                          } else if (e.key === "Escape") {
+                            setEditingChatId(null);
+                          }
+                        }}
+                        style={styles.chatTitleInput}
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        style={styles.chatHistoryButton}
+                        onClick={() => {
+                          selectChat(chat.id);
+                          setIsExpanded(false);
+                        }}
+                      >
+                        <span style={styles.chatHistoryTitle}>{chat.title}</span>
+                        <span style={styles.chatHistoryMeta}>
+                          {chat.messages.length} message{chat.messages.length !== 1 ? "s" : ""}
+                        </span>
+                      </button>
+                    )}
+                    <div style={styles.chatHistoryActions}>
+                      <button
+                        style={styles.chatActionButton}
+                        onClick={() => {
+                          setEditingChatId(chat.id);
+                          setEditingTitle(chat.title);
+                        }}
+                        title="Rename"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                      </button>
+                      <button
+                        style={styles.chatActionButton}
+                        onClick={() => deleteChat(chat.id)}
+                        title="Delete"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="3 6 5 6 21 6"></polyline>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
         {selectedPrompt && selectedPromptInfo && (
           <div style={styles.editorContainer}>
             <div style={styles.editorHeader}>
@@ -628,6 +815,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     alignItems: "center",
     justifyContent: "center",
     transition: "all 0.2s",
+    position: "relative",
   },
   expandedContent: {
     flex: 1,
@@ -953,5 +1141,104 @@ const styles: { [key: string]: React.CSSProperties } = {
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
     lineHeight: 1.5,
+  },
+  chatCountBadge: {
+    position: "absolute",
+    top: "-2px",
+    right: "-2px",
+    fontSize: "0.55rem",
+    fontWeight: 600,
+    background: "var(--accent)",
+    color: "white",
+    borderRadius: "8px",
+    padding: "0.1rem 0.3rem",
+    minWidth: "14px",
+    textAlign: "center",
+  },
+  newChatButton: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    padding: "0.35rem 0.6rem",
+    background: "var(--accent)",
+    border: "none",
+    borderRadius: "6px",
+    color: "white",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+    transition: "all 0.2s",
+    marginLeft: "auto",
+  },
+  chatHistoryContainer: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "0.5rem",
+  },
+  chatHistoryItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    padding: "0.5rem",
+    borderRadius: "8px",
+    marginBottom: "0.25rem",
+    transition: "all 0.2s",
+    background: "transparent",
+  },
+  chatHistoryItemActive: {
+    background: "rgba(99, 102, 241, 0.15)",
+  },
+  chatHistoryButton: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "0.125rem",
+    background: "transparent",
+    border: "none",
+    cursor: "pointer",
+    padding: 0,
+    minWidth: 0,
+  },
+  chatHistoryTitle: {
+    fontSize: "0.8rem",
+    fontWeight: 500,
+    color: "var(--foreground)",
+    textAlign: "left",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    width: "100%",
+  },
+  chatHistoryMeta: {
+    fontSize: "0.65rem",
+    color: "var(--muted)",
+  },
+  chatHistoryActions: {
+    display: "flex",
+    gap: "0.25rem",
+    opacity: 0.5,
+    transition: "opacity 0.2s",
+  },
+  chatActionButton: {
+    background: "transparent",
+    border: "none",
+    color: "var(--muted)",
+    cursor: "pointer",
+    padding: "0.25rem",
+    borderRadius: "4px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "all 0.2s",
+  },
+  chatTitleInput: {
+    flex: 1,
+    background: "rgba(0, 0, 0, 0.3)",
+    border: "1px solid var(--accent)",
+    borderRadius: "4px",
+    color: "var(--foreground)",
+    fontSize: "0.8rem",
+    padding: "0.25rem 0.5rem",
+    outline: "none",
   },
 };

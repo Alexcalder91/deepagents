@@ -310,7 +310,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: "none", // Only show on mobile
   },
   header: {
-    padding: "1.25rem",
+    padding: "0.75rem",
     borderBottom: "1px solid var(--border)",
     background: "rgba(255, 255, 255, 0.02)",
   },
@@ -368,8 +368,8 @@ const styles: { [key: string]: React.CSSProperties } = {
   activityList: {
     flex: 1,
     overflowY: "auto",
-    padding: "1rem",
-    paddingRight: "0.75rem",
+    padding: "0.5rem",
+    paddingRight: "0.5rem",
   },
   emptyState: {
     display: "flex",
@@ -542,7 +542,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     margin: 0,
   },
   footer: {
-    padding: "1rem 1.25rem",
+    padding: "0.5rem 0.75rem",
     borderTop: "1px solid var(--border)",
     background: "rgba(255, 255, 255, 0.02)",
   },

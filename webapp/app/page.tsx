@@ -8,6 +8,7 @@ import ToolActivitySidebar, { ToolActivity } from "./components/ToolActivitySide
 import SettingsSidebar from "./components/SettingsSidebar";
 import CanvasPreview from "./components/CanvasPreview";
 import { usePromptConfig } from "./contexts/PromptConfigContext";
+import { useChatHistory, ChatMessage } from "./contexts/ChatHistoryContext";
 
 interface CanvasData {
   title: string;
@@ -54,6 +55,43 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { config } = usePromptConfig();
+  const { currentChat, currentChatId, updateCurrentChat } = useChatHistory();
+
+  // Sync messages with chat history
+  useEffect(() => {
+    if (currentChat) {
+      setMessages(currentChat.messages as Message[]);
+      setToolActivities([]);
+      setCanvas({
+        isOpen: false,
+        messageId: null,
+        title: "",
+        content: "",
+        isStreaming: false,
+      });
+    } else {
+      setMessages([]);
+      setToolActivities([]);
+    }
+  }, [currentChatId, currentChat]);
+
+  // Save messages to chat history when they change (with debounce)
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    if (messages.length > 0 && !isLoading) {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      saveTimeoutRef.current = setTimeout(() => {
+        updateCurrentChat(messages as ChatMessage[]);
+      }, 500);
+    }
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [messages, isLoading, updateCurrentChat]);
 
   // Load memory from localStorage on mount
   useEffect(() => {
@@ -689,7 +727,7 @@ export default function Home() {
             style={{
               ...styles.canvasWrapper,
               width: getCanvasWidth(),
-              right: activitySidebarOpen ? "380px" : "0",
+              right: activitySidebarOpen ? "min(15vw, 280px)" : "0",
             }}
           >
             <Canvas

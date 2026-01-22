@@ -163,3 +163,16 @@ a {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
+
+/* Chat history item hover effects */
+.chat-history-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-history-item:hover .chatHistoryActions {
+  opacity: 1;
+}
+
+.settings-new-chat-button:hover {
+  background: var(--accent-hover) !important;
+}
