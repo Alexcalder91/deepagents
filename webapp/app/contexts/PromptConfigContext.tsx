@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from "react";
 
 // Define all the prompt categories and their default values
 export interface PromptConfig {
@@ -226,6 +226,7 @@ The above <agent_memory> was loaded in from files in your filesystem. As you lea
 
 interface PromptConfigContextType {
   config: PromptConfig;
+  isLoading: boolean;
   updatePrompt: (key: keyof PromptConfig, value: string) => void;
   resetPrompt: (key: keyof PromptConfig) => void;
   resetAllPrompts: () => void;
@@ -234,47 +235,93 @@ interface PromptConfigContextType {
 
 const PromptConfigContext = createContext<PromptConfigContextType | undefined>(undefined);
 
-const STORAGE_KEY = "deepagents-prompt-config";
-
 export function PromptConfigProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<PromptConfig>(DEFAULT_PROMPTS);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load from localStorage on mount
+  // Load from database on mount
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setConfig({ ...DEFAULT_PROMPTS, ...parsed });
+    async function loadConfig() {
+      try {
+        const response = await fetch("/api/prompt-config");
+        if (response.ok) {
+          const data = await response.json();
+          // Merge database config with defaults (database values override defaults)
+          if (data.systemPrompt) {
+            setConfig((prev) => ({
+              ...prev,
+              mainAgentSystemPrompt: data.systemPrompt,
+            }));
+          }
+          // customInstructs could be used for additional prompt configuration
+          if (data.customInstructs) {
+            try {
+              const customConfig = JSON.parse(data.customInstructs);
+              setConfig((prev) => ({ ...prev, ...customConfig }));
+            } catch {
+              // customInstructs is not JSON, ignore
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load prompt config from database:", error);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (e) {
-      console.error("Failed to load prompt config:", e);
     }
-    setIsLoaded(true);
+
+    loadConfig();
   }, []);
 
-  // Save to localStorage on change
-  useEffect(() => {
-    if (isLoaded) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-      } catch (e) {
-        console.error("Failed to save prompt config:", e);
-      }
+  // Debounced save to database
+  const saveToDatabase = async (newConfig: PromptConfig) => {
+    try {
+      // Store main system prompt directly, and other configs as JSON in customInstructs
+      const { mainAgentSystemPrompt, ...otherConfigs } = newConfig;
+      await fetch("/api/prompt-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: mainAgentSystemPrompt,
+          customInstructs: JSON.stringify(otherConfigs),
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to save prompt config to database:", error);
     }
-  }, [config, isLoaded]);
+  };
 
   const updatePrompt = (key: keyof PromptConfig, value: string) => {
-    setConfig((prev) => ({ ...prev, [key]: value }));
+    setConfig((prev) => {
+      const newConfig = { ...prev, [key]: value };
+
+      // Debounced save to database
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      saveTimeoutRef.current = setTimeout(() => {
+        saveToDatabase(newConfig);
+      }, 1000);
+
+      return newConfig;
+    });
   };
 
   const resetPrompt = (key: keyof PromptConfig) => {
-    setConfig((prev) => ({ ...prev, [key]: DEFAULT_PROMPTS[key] }));
+    setConfig((prev) => {
+      const newConfig = { ...prev, [key]: DEFAULT_PROMPTS[key] };
+
+      // Save to database immediately on reset
+      saveToDatabase(newConfig);
+
+      return newConfig;
+    });
   };
 
   const resetAllPrompts = () => {
     setConfig(DEFAULT_PROMPTS);
+    saveToDatabase(DEFAULT_PROMPTS);
   };
 
   const hasChanges = (key: keyof PromptConfig) => {
@@ -283,7 +330,7 @@ export function PromptConfigProvider({ children }: { children: ReactNode }) {
 
   return (
     <PromptConfigContext.Provider
-      value={{ config, updatePrompt, resetPrompt, resetAllPrompts, hasChanges }}
+      value={{ config, isLoading, updatePrompt, resetPrompt, resetAllPrompts, hasChanges }}
     >
       {children}
     </PromptConfigContext.Provider>

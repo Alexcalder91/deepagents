@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
 
 export interface ChatMessage {
   id: string;
@@ -31,20 +31,17 @@ interface ChatHistoryContextType {
   chats: Chat[];
   currentChatId: string | null;
   currentChat: Chat | null;
-  createNewChat: () => string;
+  isLoading: boolean;
+  createNewChat: () => Promise<string>;
   selectChat: (chatId: string) => void;
   updateCurrentChat: (messages: ChatMessage[]) => void;
-  deleteChat: (chatId: string) => void;
-  renameChat: (chatId: string, title: string) => void;
+  deleteChat: (chatId: string) => Promise<void>;
+  renameChat: (chatId: string, title: string) => Promise<void>;
 }
 
 const ChatHistoryContext = createContext<ChatHistoryContextType | null>(null);
 
-const STORAGE_KEY = "deepagents-chat-history";
-
-function generateChatId(): string {
-  return `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
+const CURRENT_CHAT_KEY = "deepagents-current-chat-id";
 
 function generateChatTitle(messages: ChatMessage[]): string {
   const firstUserMessage = messages.find((m) => m.role === "user");
@@ -61,44 +58,89 @@ function generateChatTitle(messages: ChatMessage[]): string {
 export function ChatHistoryProvider({ children }: { children: ReactNode }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingSaveRef = useRef<{ chatId: string; messages: ChatMessage[]; title: string } | null>(null);
 
-  // Load chats from localStorage on mount
+  // Load chats from database on mount
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
+    async function loadChats() {
       try {
-        const parsed = JSON.parse(saved);
-        setChats(parsed.chats || []);
-        setCurrentChatId(parsed.currentChatId || null);
-      } catch {
-        // Invalid JSON, start fresh
+        const response = await fetch("/api/chats");
+        if (response.ok) {
+          const data = await response.json();
+          setChats(data);
+        }
+      } catch (error) {
+        console.error("Failed to load chats from database:", error);
+      } finally {
+        setIsLoading(false);
+      }
+
+      // Restore current chat ID from localStorage (just the ID, not the data)
+      const savedChatId = localStorage.getItem(CURRENT_CHAT_KEY);
+      if (savedChatId) {
+        setCurrentChatId(savedChatId);
       }
     }
+
+    loadChats();
   }, []);
 
-  // Save chats to localStorage when they change
+  // Save current chat ID to localStorage when it changes
   useEffect(() => {
-    if (chats.length > 0 || currentChatId) {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ chats, currentChatId })
-      );
+    if (currentChatId) {
+      localStorage.setItem(CURRENT_CHAT_KEY, currentChatId);
+    } else {
+      localStorage.removeItem(CURRENT_CHAT_KEY);
     }
-  }, [chats, currentChatId]);
+  }, [currentChatId]);
 
   const currentChat = chats.find((c) => c.id === currentChatId) || null;
 
-  const createNewChat = useCallback(() => {
+  // Debounced save to database
+  const saveToDatabase = useCallback(async (chatId: string, messages: ChatMessage[], title: string) => {
+    try {
+      await fetch(`/api/chats/${chatId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages, title }),
+      });
+    } catch (error) {
+      console.error("Failed to save chat to database:", error);
+    }
+  }, []);
+
+  const createNewChat = useCallback(async () => {
+    try {
+      const response = await fetch("/api/chats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "New Chat" }),
+      });
+
+      if (response.ok) {
+        const newChat = await response.json();
+        setChats((prev) => [newChat, ...prev]);
+        setCurrentChatId(newChat.id);
+        return newChat.id;
+      }
+    } catch (error) {
+      console.error("Failed to create chat:", error);
+    }
+
+    // Fallback: create locally if API fails
+    const fallbackId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newChat: Chat = {
-      id: generateChatId(),
+      id: fallbackId,
       title: "New Chat",
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
     setChats((prev) => [newChat, ...prev]);
-    setCurrentChatId(newChat.id);
-    return newChat.id;
+    setCurrentChatId(fallbackId);
+    return fallbackId;
   }, []);
 
   const selectChat = useCallback((chatId: string) => {
@@ -109,37 +151,77 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
     (messages: ChatMessage[]) => {
       if (!currentChatId) {
         // Create a new chat if none exists
-        const newId = generateChatId();
-        const newChat: Chat = {
-          id: newId,
-          title: generateChatTitle(messages),
-          messages,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-        setChats((prev) => [newChat, ...prev]);
-        setCurrentChatId(newId);
+        (async () => {
+          try {
+            const response = await fetch("/api/chats", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title: generateChatTitle(messages) }),
+            });
+
+            if (response.ok) {
+              const newChat = await response.json();
+              newChat.messages = messages;
+              setChats((prev) => [newChat, ...prev]);
+              setCurrentChatId(newChat.id);
+
+              // Save messages to database
+              saveToDatabase(newChat.id, messages, newChat.title);
+            }
+          } catch (error) {
+            console.error("Failed to create chat:", error);
+          }
+        })();
         return;
       }
 
+      const chat = chats.find((c) => c.id === currentChatId);
+      const newTitle = chat?.title === "New Chat" ? generateChatTitle(messages) : (chat?.title || "New Chat");
+
       setChats((prev) =>
-        prev.map((chat) =>
-          chat.id === currentChatId
+        prev.map((c) =>
+          c.id === currentChatId
             ? {
-                ...chat,
+                ...c,
                 messages,
-                title: chat.title === "New Chat" ? generateChatTitle(messages) : chat.title,
+                title: newTitle,
                 updatedAt: Date.now(),
               }
-            : chat
+            : c
         )
       );
+
+      // Debounced save to database
+      pendingSaveRef.current = { chatId: currentChatId, messages, title: newTitle };
+
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+
+      saveTimeoutRef.current = setTimeout(() => {
+        if (pendingSaveRef.current) {
+          saveToDatabase(
+            pendingSaveRef.current.chatId,
+            pendingSaveRef.current.messages,
+            pendingSaveRef.current.title
+          );
+          pendingSaveRef.current = null;
+        }
+      }, 1000); // Save after 1 second of inactivity
     },
-    [currentChatId]
+    [currentChatId, chats, saveToDatabase]
   );
 
   const deleteChat = useCallback(
-    (chatId: string) => {
+    async (chatId: string) => {
+      try {
+        await fetch(`/api/chats/${chatId}`, {
+          method: "DELETE",
+        });
+      } catch (error) {
+        console.error("Failed to delete chat from database:", error);
+      }
+
       setChats((prev) => prev.filter((c) => c.id !== chatId));
       if (currentChatId === chatId) {
         setCurrentChatId(null);
@@ -148,7 +230,7 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
     [currentChatId]
   );
 
-  const renameChat = useCallback((chatId: string, title: string) => {
+  const renameChat = useCallback(async (chatId: string, title: string) => {
     setChats((prev) =>
       prev.map((chat) =>
         chat.id === chatId
@@ -156,6 +238,16 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
           : chat
       )
     );
+
+    try {
+      await fetch(`/api/chats/${chatId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+    } catch (error) {
+      console.error("Failed to rename chat in database:", error);
+    }
   }, []);
 
   return (
@@ -164,6 +256,7 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
         chats,
         currentChatId,
         currentChat,
+        isLoading,
         createNewChat,
         selectChat,
         updateCurrentChat,

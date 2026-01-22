@@ -7,8 +7,10 @@ import ToolTimeline, { ToolStep } from "./components/ToolTimeline";
 import ToolActivitySidebar, { ToolActivity } from "./components/ToolActivitySidebar";
 import SettingsSidebar from "./components/SettingsSidebar";
 import CanvasPreview from "./components/CanvasPreview";
+import PlanSidebar, { Plan, PlanStep } from "./components/PlanSidebar";
 import { usePromptConfig } from "./contexts/PromptConfigContext";
 import { useChatHistory, ChatMessage } from "./contexts/ChatHistoryContext";
+import { useMemory } from "./contexts/MemoryContext";
 
 interface CanvasData {
   title: string;
@@ -31,9 +33,6 @@ interface CanvasState {
   isStreaming: boolean;
 }
 
-interface MemoryFiles {
-  [path: string]: string;
-}
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -51,11 +50,13 @@ export default function Home() {
   const [activitySidebarOpen, setActivitySidebarOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.34); // Chat takes 34%, canvas takes 66%
   const [isDragging, setIsDragging] = useState(false);
-  const [memoryFiles, setMemoryFiles] = useState<MemoryFiles>({});
+  const [currentPlan, setCurrentPlan] = useState<Plan | null>(null);
+  const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { config } = usePromptConfig();
   const { currentChat, currentChatId, updateCurrentChat } = useChatHistory();
+  const { memoryFiles, updateMemory } = useMemory();
 
   // Sync messages with chat history
   useEffect(() => {
@@ -92,25 +93,6 @@ export default function Home() {
       }
     };
   }, [messages, isLoading, updateCurrentChat]);
-
-  // Load memory from localStorage on mount
-  useEffect(() => {
-    const savedMemory = localStorage.getItem("deepagents-memory");
-    if (savedMemory) {
-      try {
-        setMemoryFiles(JSON.parse(savedMemory));
-      } catch {
-        // Invalid JSON, start fresh
-      }
-    }
-  }, []);
-
-  // Save memory to localStorage when it changes
-  useEffect(() => {
-    if (Object.keys(memoryFiles).length > 0) {
-      localStorage.setItem("deepagents-memory", JSON.stringify(memoryFiles));
-    }
-  }, [memoryFiles]);
 
   // Pending canvas data while streaming (before attaching to message)
   const [pendingCanvas, setPendingCanvas] = useState<CanvasData | null>(null);
@@ -369,10 +351,28 @@ export default function Home() {
                   setCanvas((prev) => ({ ...prev, isStreaming: false }));
                 } else if (parsed.type === "memory_update") {
                   // Update memory files when agent writes to them
-                  setMemoryFiles((prev) => ({
-                    ...prev,
-                    [parsed.path]: parsed.content,
-                  }));
+                  updateMemory(parsed.path, parsed.content);
+                } else if (parsed.type === "plan_create") {
+                  // Create a new plan and open the sidebar
+                  setCurrentPlan(parsed.plan as Plan);
+                  setPlanSidebarOpen(true);
+                } else if (parsed.type === "plan_update") {
+                  // Update a plan step
+                  setCurrentPlan((prev) => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      steps: prev.steps.map((step) =>
+                        step.id === parsed.step_id
+                          ? {
+                              ...step,
+                              status: parsed.status as PlanStep["status"],
+                              output: parsed.output || step.output,
+                            }
+                          : step
+                      ),
+                    };
+                  });
                 } else if (parsed.content) {
                   // Regular chat content
                   setMessages((prev) =>
@@ -489,33 +489,67 @@ export default function Home() {
               </div>
               <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
             </div>
-            {/* Activity toggle button */}
-            <button
-              onClick={() => setActivitySidebarOpen(!activitySidebarOpen)}
-              style={{
-                ...styles.activityToggle,
-                ...(toolActivities.some((a) => a.status === "running")
-                  ? styles.activityToggleActive
-                  : {}),
-              }}
-              title={activitySidebarOpen ? "Hide activity" : "Show activity"}
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-              </svg>
-              {toolActivities.length > 0 && (
-                <span style={styles.activityBadge}>{toolActivities.length}</span>
+            {/* Header buttons */}
+            <div style={styles.headerButtons}>
+              {/* Plan toggle button - only show when there's a plan */}
+              {currentPlan && (
+                <button
+                  onClick={() => setPlanSidebarOpen(!planSidebarOpen)}
+                  style={{
+                    ...styles.planToggle,
+                    ...(currentPlan.steps.some((s) => s.status === "in_progress")
+                      ? styles.planToggleActive
+                      : {}),
+                  }}
+                  title={planSidebarOpen ? "Hide plan" : "Show plan"}
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M9 11l3 3L22 4"></path>
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                  </svg>
+                  <span style={styles.planBadge}>
+                    {currentPlan.steps.filter((s) => s.status === "completed").length}/
+                    {currentPlan.steps.length}
+                  </span>
+                </button>
               )}
-            </button>
+              {/* Activity toggle button */}
+              <button
+                onClick={() => setActivitySidebarOpen(!activitySidebarOpen)}
+                style={{
+                  ...styles.activityToggle,
+                  ...(toolActivities.some((a) => a.status === "running")
+                    ? styles.activityToggleActive
+                    : {}),
+                }}
+                title={activitySidebarOpen ? "Hide activity" : "Show activity"}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                </svg>
+                {toolActivities.length > 0 && (
+                  <span style={styles.activityBadge}>{toolActivities.length}</span>
+                )}
+              </button>
+            </div>
           </header>
         )}
 
@@ -743,6 +777,13 @@ export default function Home() {
         </>
       )}
 
+      {/* Plan Sidebar */}
+      <PlanSidebar
+        plan={currentPlan}
+        isOpen={planSidebarOpen}
+        onClose={() => setPlanSidebarOpen(false)}
+      />
+
       {/* Activity Sidebar */}
       <ToolActivitySidebar
         activities={toolActivities}
@@ -870,6 +911,11 @@ const styles: { [key: string]: React.CSSProperties } = {
     justifyContent: "center",
     gap: "0.5rem",
   },
+  headerButtons: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
   activityToggle: {
     background: "var(--card)",
     border: "1px solid var(--border)",
@@ -892,6 +938,33 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontWeight: 600,
     background: "var(--accent)",
     color: "white",
+    borderRadius: "10px",
+    padding: "0.1rem 0.4rem",
+    minWidth: "18px",
+    textAlign: "center" as const,
+  },
+  planToggle: {
+    background: "var(--card)",
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    color: "var(--muted)",
+    cursor: "pointer",
+    padding: "0.5rem 0.75rem",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    transition: "all 0.2s",
+    position: "relative" as const,
+  },
+  planToggleActive: {
+    borderColor: "#34d399",
+    color: "#34d399",
+  },
+  planBadge: {
+    fontSize: "0.65rem",
+    fontWeight: 600,
+    background: "#34d39920",
+    color: "#34d399",
     borderRadius: "10px",
     padding: "0.1rem 0.4rem",
     minWidth: "18px",

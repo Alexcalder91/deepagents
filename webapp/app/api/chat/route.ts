@@ -98,7 +98,61 @@ To use the canvas, call the create_canvas tool with:
 
 Write the complete content in one tool call. The content supports basic markdown formatting (headers, bold, italic, lists).
 
-Be concise but thorough. Use markdown formatting when helpful.`;
+Be concise but thorough. Use markdown formatting when helpful.
+
+## Planning Tool
+
+You have access to a planning tool for complex, multi-step tasks. USE THE PLANNING TOOL when:
+- User asks you to "plan", "break down", or "organize" a task
+- User requests work that involves multiple steps or phases
+- User asks you to coordinate multiple subagents
+- You need to tackle a complex problem that benefits from structured thinking
+- User wants visibility into how you'll approach a task
+
+### How to use the planning tool:
+
+1. **Create a plan** with \`create_plan\`:
+   - title: Concise name for the plan
+   - goal: What the plan aims to achieve
+   - steps: Array of steps, each with:
+     - id: Unique identifier (e.g., "step-1", "research-phase")
+     - title: Short title
+     - description: What this step involves
+     - type: "task" (you do it), "subagent" (delegate), "manual" (user action), or "checkpoint" (review point)
+     - assignee: For subagent steps, name the agent (e.g., "Research Agent")
+     - dependencies: Array of step IDs that must complete first
+
+2. **Execute the plan** by:
+   - Mark steps as "in_progress" when starting with \`update_plan\`
+   - Execute the actual work (use tools, call subagents, etc.)
+   - Mark steps as "completed" when done, including any output
+   - Mark steps as "failed" if something goes wrong
+
+3. **Coordinate subagents** by:
+   - Creating plan steps with type "subagent"
+   - Launching the subagent with the \`task\` tool
+   - Updating the plan step with the subagent's results
+
+### Example workflow:
+\`\`\`
+User: "Research and write reports about 5 duck species"
+
+1. create_plan with steps:
+   - step-1: "Research Mallard" (type: subagent)
+   - step-2: "Research Wood Duck" (type: subagent)
+   - step-3: "Research Mandarin" (type: subagent)
+   - step-4: "Research Teal" (type: subagent)
+   - step-5: "Research Pintail" (type: subagent)
+   - step-6: "Compile final report" (type: task, dependencies: [1-5])
+
+2. update_plan step-1 status: "in_progress"
+3. task: Launch research subagent for Mallard
+4. update_plan step-1 status: "completed" with output
+... repeat for other steps ...
+5. Compile results and present to user
+\`\`\`
+
+The plan appears in the UI sidebar so users can track progress in real-time.`;
 
 const DEFAULT_CANVAS_TOOL_DESCRIPTION = `Creates a document canvas in the UI to display long-form content like articles, blog posts, proposals, code files, reports, etc. Use this when the user asks you to write, create, or draft substantial content that would benefit from a dedicated document view.`;
 
@@ -363,8 +417,48 @@ function createTools(config: ExtendedPromptConfig = {}): Anthropic.Tool[] {
             enum: ["general-purpose", "explore", "research"],
             description: "Type of subagent to use. Defaults to 'general-purpose'.",
           },
+          shared_doc_id: {
+            type: "string",
+            description: "If a shared document was created, pass the document ID so the subagent can write to it.",
+          },
         },
         required: ["reasoning", "description", "prompt"],
+      },
+    },
+    {
+      name: "create_shared_doc",
+      description: `Create a shared document that multiple subagents can write to collaboratively. Use this BEFORE launching subagents when you need them to contribute sections to a single document. Each subagent will write to their own section, and you can then present the full document to the user.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of why you're creating this shared document.",
+          },
+          title: {
+            type: "string",
+            description: "The title for the document (e.g., '12th Grade Algebra Research').",
+          },
+        },
+        required: ["reasoning", "title"],
+      },
+    },
+    {
+      name: "get_shared_doc",
+      description: `Get the current content of a shared document after subagents have written to it. Use this to retrieve the compiled document and present it to the user via create_canvas.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of why you're retrieving this document.",
+          },
+          doc_id: {
+            type: "string",
+            description: "The ID of the shared document to retrieve.",
+          },
+        },
+        required: ["reasoning", "doc_id"],
       },
     },
     {
@@ -471,6 +565,8 @@ function getToolReasoning(toolName: string, input: Record<string, unknown>): str
     grep: "Searching for pattern",
     execute: "Executing command",
     task: "Launching subagent",
+    create_plan: "Creating execution plan",
+    update_plan: "Updating plan progress",
   };
   return defaults[toolName] || "Processing request";
 }
@@ -726,31 +822,230 @@ async function executeCommand(
   }
 }
 
-// Execute subagent task
+// Shared document state for coordinating subagent writes
+interface SharedDocument {
+  id: string;
+  title: string;
+  sections: { [sectionId: string]: { title: string; content: string; author: string; timestamp: number } };
+  order: string[]; // Section IDs in order
+}
+
+// Global shared document storage (in production, use Redis or similar)
+const sharedDocuments: { [docId: string]: SharedDocument } = {};
+
+// Create a new shared document
+function createSharedDocument(id: string, title: string): SharedDocument {
+  const doc: SharedDocument = {
+    id,
+    title,
+    sections: {},
+    order: [],
+  };
+  sharedDocuments[id] = doc;
+  return doc;
+}
+
+// Add or update a section in the shared document (thread-safe with locking)
+function writeDocumentSection(
+  docId: string,
+  sectionId: string,
+  sectionTitle: string,
+  content: string,
+  author: string
+): { success: boolean; message: string } {
+  const doc = sharedDocuments[docId];
+  if (!doc) {
+    return { success: false, message: `Document ${docId} not found` };
+  }
+
+  // Add section
+  doc.sections[sectionId] = {
+    title: sectionTitle,
+    content,
+    author,
+    timestamp: Date.now(),
+  };
+
+  // Add to order if new
+  if (!doc.order.includes(sectionId)) {
+    doc.order.push(sectionId);
+  }
+
+  return { success: true, message: `Section "${sectionTitle}" written successfully` };
+}
+
+// Get the full document content as markdown
+function getSharedDocumentContent(docId: string): string | null {
+  const doc = sharedDocuments[docId];
+  if (!doc) return null;
+
+  let content = `# ${doc.title}\n\n`;
+
+  for (const sectionId of doc.order) {
+    const section = doc.sections[sectionId];
+    if (section) {
+      content += `## ${section.title}\n\n${section.content}\n\n`;
+    }
+  }
+
+  return content.trim();
+}
+
+// Subagent tools - these are the tools available to subagents
+function createSubagentTools(docId: string): Anthropic.Tool[] {
+  return [
+    {
+      name: "write_section",
+      description: `Write your research findings to a specific section of the shared document. Each subagent should write to their own unique section. The section will be added to the collaborative document that will be presented to the user.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          section_id: {
+            type: "string",
+            description: "A unique identifier for this section (e.g., 'polynomial-functions', 'exponential-logs'). Use lowercase with hyphens.",
+          },
+          section_title: {
+            type: "string",
+            description: "The title for this section (e.g., 'Polynomial Functions & Analysis').",
+          },
+          content: {
+            type: "string",
+            description: "The full content to write to this section. Use markdown formatting. Include all your research findings, explanations, formulas, examples, etc.",
+          },
+        },
+        required: ["section_id", "section_title", "content"],
+      },
+    },
+    {
+      name: "read_document",
+      description: `Read the current state of the shared document to see what other subagents have written.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
+  ];
+}
+
+// Execute subagent task with shared document access
 async function executeSubagentTask(
   description: string,
   prompt: string,
   subagentType: string,
-  systemPrompt: string
+  systemPrompt: string,
+  sharedDocId?: string
 ): Promise<string> {
   try {
-    // Create a simplified subagent that uses the same model
-    const subagentResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: `You are a specialized subagent (${subagentType}) helping with the following task.
+    const hasSharedDoc = sharedDocId && sharedDocuments[sharedDocId];
+    const subagentTools = hasSharedDoc ? createSubagentTools(sharedDocId) : [];
+
+    const subagentSystemPrompt = `You are a specialized subagent (${subagentType}) helping with the following task.
 
 Your role: ${description}
 
 ${systemPrompt}
 
-Provide a clear, concise response that directly addresses the task. Focus on delivering actionable results.`,
-      messages: [{ role: "user", content: prompt }],
-    });
+${hasSharedDoc ? `
+## CRITICAL: Writing to the Shared Document
 
-    // Extract text from response
-    const textBlocks = subagentResponse.content.filter((b) => b.type === "text");
-    return textBlocks.map((b) => b.text).join("\n");
+You have access to a SHARED DOCUMENT (ID: ${sharedDocId}) where you MUST write your research findings.
+
+**You MUST use the write_section tool to write your complete research to the document.**
+
+DO NOT just return your findings as text. Instead:
+1. Do your research
+2. Call the write_section tool with your complete findings
+3. Then confirm that you've written to the document
+
+The write_section tool takes:
+- section_id: A unique identifier for your section (e.g., 'polynomial-functions')
+- section_title: The title for your section
+- content: Your complete research content in markdown format
+
+Write comprehensive, detailed content. This is what the user will see in the final document.
+` : ''}
+
+Provide a clear, concise response that directly addresses the task. Focus on delivering actionable results.`;
+
+    // If no shared doc, use simple subagent
+    if (!hasSharedDoc) {
+      const subagentResponse = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: subagentSystemPrompt,
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      const textBlocks = subagentResponse.content.filter((b) => b.type === "text");
+      return textBlocks.map((b) => b.text).join("\n");
+    }
+
+    // With shared doc, use agentic loop so subagent can use tools
+    let conversationMessages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
+    let continueLoop = true;
+    let finalOutput = "";
+
+    while (continueLoop) {
+      const subagentResponse = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: subagentSystemPrompt,
+        tools: subagentTools,
+        messages: conversationMessages,
+      });
+
+      const textBlocks = subagentResponse.content.filter((b) => b.type === "text");
+      const toolUseBlocks = subagentResponse.content.filter((b) => b.type === "tool_use");
+
+      // Collect text output
+      finalOutput += textBlocks.map((b) => b.text).join("\n");
+
+      if (toolUseBlocks.length > 0) {
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+        for (const block of toolUseBlocks) {
+          if (block.type === "tool_use") {
+            let result = "";
+
+            if (block.name === "write_section") {
+              const input = block.input as { section_id: string; section_title: string; content: string };
+              const writeResult = writeDocumentSection(
+                sharedDocId,
+                input.section_id,
+                input.section_title,
+                input.content,
+                description // Use description as author
+              );
+              result = writeResult.message;
+            } else if (block.name === "read_document") {
+              const content = getSharedDocumentContent(sharedDocId);
+              result = content || "Document is empty.";
+            }
+
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: result,
+            });
+          }
+        }
+
+        // Add to conversation and continue
+        conversationMessages = [
+          ...conversationMessages,
+          { role: "assistant" as const, content: subagentResponse.content },
+          { role: "user" as const, content: toolResults },
+        ];
+      } else {
+        continueLoop = false;
+      }
+
+      if (subagentResponse.stop_reason === "end_turn" && toolUseBlocks.length === 0) {
+        continueLoop = false;
+      }
+    }
+
+    return finalOutput || "Research completed and written to shared document.";
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     return `Subagent error: ${errMsg}`;
@@ -883,8 +1178,83 @@ async function executeTool(
       const description = input.description as string;
       const prompt = input.prompt as string;
       const subagentType = (input.subagent_type as string) || "general-purpose";
+      const sharedDocId = input.shared_doc_id as string | undefined;
       const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
-      output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt);
+      output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId);
+      break;
+    }
+
+    case "create_shared_doc": {
+      const title = input.title as string;
+      const docId = `doc_${Date.now()}`;
+      createSharedDocument(docId, title);
+      output = `Created shared document "${title}" with ID: ${docId}. Pass this doc_id to your task calls using the shared_doc_id parameter so subagents can write to it.`;
+      break;
+    }
+
+    case "get_shared_doc": {
+      const docId = input.doc_id as string;
+      const content = getSharedDocumentContent(docId);
+      if (content) {
+        output = content;
+      } else {
+        output = `Document ${docId} not found or is empty.`;
+      }
+      break;
+    }
+
+    case "create_plan": {
+      const planInput = input as {
+        title: string;
+        goal: string;
+        steps: Array<{
+          id: string;
+          title: string;
+          description: string;
+          type: string;
+          assignee?: string;
+          dependencies?: string[];
+        }>;
+      };
+
+      // Send plan creation event to the UI
+      const planData = JSON.stringify({
+        type: "plan_create",
+        plan: {
+          id: `plan_${Date.now()}`,
+          title: planInput.title,
+          goal: planInput.goal,
+          steps: planInput.steps.map((step) => ({
+            ...step,
+            status: "pending",
+            output: null,
+          })),
+          createdAt: new Date().toISOString(),
+        },
+      });
+      controller.enqueue(encoder.encode(`data: ${planData}\n\n`));
+
+      output = `Created plan "${planInput.title}" with ${planInput.steps.length} steps. The plan is now visible in the UI sidebar. I will now begin executing the plan steps.`;
+      break;
+    }
+
+    case "update_plan": {
+      const updateInput = input as {
+        step_id: string;
+        status: string;
+        output?: string;
+      };
+
+      // Send plan update event to the UI
+      const updateData = JSON.stringify({
+        type: "plan_update",
+        step_id: updateInput.step_id,
+        status: updateInput.status,
+        output: updateInput.output || null,
+      });
+      controller.enqueue(encoder.encode(`data: ${updateData}\n\n`));
+
+      output = `Updated step "${updateInput.step_id}" to status "${updateInput.status}"${updateInput.output ? ` with output.` : "."}`;
       break;
     }
 
@@ -945,11 +1315,46 @@ export async function POST(req: Request) {
       systemPrompt += `\n\n## Current Memory\nNo memory file exists yet. Create one using edit_file with path "AGENTS.md" when you need to remember information.`;
     }
 
-    // Add instruction about parallel subagents
-    systemPrompt += `\n\n## Subagent Usage
-When you need to launch multiple subagents, call the task tool multiple times in the SAME response. They will be executed in parallel and their results will be collected for you to synthesize.
+    // Add instruction about parallel subagents and shared documents
+    systemPrompt += `\n\n## Subagent Usage & Shared Documents
 
-Example: If asked to write reports about 5 different topics, make 5 separate task tool calls in your response, one for each topic. Do NOT make them sequentially.`;
+When you need multiple subagents to contribute to a single document (research reports, collaborative writing, etc.):
+
+### CRITICAL WORKFLOW for multi-subagent research/writing tasks:
+
+1. **First**, create a shared document using \`create_shared_doc\` with a descriptive title
+2. **Then**, launch ALL subagents in parallel with the \`task\` tool, passing the \`shared_doc_id\` to each
+3. **Wait** for all subagents to complete - they will write their sections directly to the shared document
+4. **Retrieve** the compiled document using \`get_shared_doc\`
+5. **Present** the full document to the user using \`create_canvas\`
+
+### Example workflow:
+
+\`\`\`
+User: "Research and write about 5 algebra topics"
+
+Step 1: create_shared_doc with title "Algebra Research"
+        → Returns doc_id: "doc_123"
+
+Step 2: Launch 5 task calls IN PARALLEL, each with shared_doc_id: "doc_123"
+        - task: "Research polynomials" (shared_doc_id: "doc_123")
+        - task: "Research rational functions" (shared_doc_id: "doc_123")
+        - task: "Research exponentials" (shared_doc_id: "doc_123")
+        - task: "Research systems" (shared_doc_id: "doc_123")
+        - task: "Research sequences" (shared_doc_id: "doc_123")
+
+Step 3: After all complete, call get_shared_doc with doc_id: "doc_123"
+        → Returns the full compiled document with all sections
+
+Step 4: Call create_canvas with the full document content
+        → User sees the complete research document
+\`\`\`
+
+### Key points:
+- Subagents will automatically write their research to the shared document
+- The shared_doc_id parameter is REQUIRED for collaborative documents
+- Always retrieve and present the shared document at the end
+- DO NOT just show a plan - show the ACTUAL CONTENT the subagents wrote`;
 
     const tools = createTools(config);
     if (canvasContent) {
@@ -1008,16 +1413,21 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
             const textBlocks = response.content.filter((b) => b.type === "text");
             const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
 
-            // Stream any text content
-            for (const block of textBlocks) {
-              if (block.type === "text") {
-                const text = block.text;
-                const chunkSize = 5;
-                for (let i = 0; i < text.length; i += chunkSize) {
-                  const chunk = text.slice(i, i + chunkSize);
-                  const data = JSON.stringify({ content: chunk });
-                  controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-                  await new Promise((resolve) => setTimeout(resolve, 5));
+            // Only stream text content if this is the FINAL response (no more tool calls)
+            // This ensures only the master agent's final synthesized response is shown to the user
+            const isFinalResponse = toolUseBlocks.length === 0;
+
+            if (isFinalResponse) {
+              for (const block of textBlocks) {
+                if (block.type === "text") {
+                  const text = block.text;
+                  const chunkSize = 5;
+                  for (let i = 0; i < text.length; i += chunkSize) {
+                    const chunk = text.slice(i, i + chunkSize);
+                    const data = JSON.stringify({ content: chunk });
+                    controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                  }
                 }
               }
             }
@@ -1069,23 +1479,63 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
                   controller.enqueue(encoder.encode(`data: ${parallelNotice}\n\n`));
                 }
 
-                // Execute all task calls in parallel
-                const taskPromises = taskCalls.map((block) => {
+                // First, send all tool_step events for subagents (so UI shows them all starting)
+                const subagentStepIds: { [toolId: string]: string } = {};
+                for (const block of taskCalls) {
                   if (block.type === "tool_use") {
-                    return executeTool(
-                      block.name,
-                      block.id,
-                      block.input as Record<string, unknown>,
-                      config,
-                      updatedMemoryFiles,
-                      controller,
-                      encoder
-                    );
+                    const stepId = `step_${Date.now()}_task_${block.id}`;
+                    subagentStepIds[block.id] = stepId;
+                    const toolStep = JSON.stringify({
+                      type: "tool_step",
+                      id: stepId,
+                      tool: "task",
+                      reasoning: getToolReasoning("task", block.input as Record<string, unknown>),
+                      status: "running",
+                      input: block.input,
+                    });
+                    controller.enqueue(encoder.encode(`data: ${toolStep}\n\n`));
                   }
-                  return Promise.resolve({ toolId: "", toolName: "", output: "", stepId: "" });
+                }
+
+                // Now execute all subagent API calls truly in parallel
+                const taskPromises = taskCalls.map(async (block) => {
+                  if (block.type === "tool_use") {
+                    const input = block.input as Record<string, unknown>;
+                    const description = input.description as string;
+                    const prompt = input.prompt as string;
+                    const subagentType = (input.subagent_type as string) || "general-purpose";
+                    const sharedDocId = input.shared_doc_id as string | undefined;
+                    const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
+
+                    // Execute subagent (this is the actual parallel work)
+                    const output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId);
+
+                    return {
+                      toolId: block.id,
+                      toolName: "task",
+                      output,
+                      stepId: subagentStepIds[block.id],
+                    };
+                  }
+                  return { toolId: "", toolName: "", output: "", stepId: "" };
                 });
 
+                // Wait for all subagents to complete in parallel
                 const taskResults = await Promise.all(taskPromises);
+
+                // Now send completion events for all subagents
+                for (const result of taskResults) {
+                  if (result.stepId) {
+                    const toolComplete = JSON.stringify({
+                      type: "tool_step_complete",
+                      id: result.stepId,
+                      tool: "task",
+                      output: result.output.length > 500 ? result.output.slice(0, 500) + "..." : result.output,
+                    });
+                    controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
+                  }
+                }
+
                 toolResults.push(...taskResults);
               }
 

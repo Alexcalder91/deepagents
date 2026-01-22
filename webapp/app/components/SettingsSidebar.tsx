@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { usePromptConfig, PromptConfig } from "../contexts/PromptConfigContext";
 import { useChatHistory } from "../contexts/ChatHistoryContext";
+import { useMemory } from "../contexts/MemoryContext";
 
 type SettingsPage = "main" | "prompts" | "memory" | "history";
 
@@ -134,16 +135,11 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
   },
 ];
 
-interface MemoryFiles {
-  [path: string]: string;
-}
-
 export default function SettingsSidebar() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [currentPage, setCurrentPage] = useState<SettingsPage>("main");
   const [selectedPrompt, setSelectedPrompt] = useState<keyof PromptConfig | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(["Main Agent"]));
-  const [memoryFiles, setMemoryFiles] = useState<MemoryFiles>({});
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -151,58 +147,10 @@ export default function SettingsSidebar() {
 
   const { config, updatePrompt, resetPrompt, hasChanges } = usePromptConfig();
   const { chats, currentChatId, createNewChat, selectChat, deleteChat, renameChat } = useChatHistory();
+  const { memoryFiles, clearAllMemories } = useMemory();
 
-  // Load memory from localStorage
-  useEffect(() => {
-    const savedMemory = localStorage.getItem("deepagents-memory");
-    if (savedMemory) {
-      try {
-        setMemoryFiles(JSON.parse(savedMemory));
-      } catch {
-        // Invalid JSON, ignore
-      }
-    }
-
-    // Listen for storage changes (when memory is updated from chat)
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === "deepagents-memory" && e.newValue) {
-        try {
-          setMemoryFiles(JSON.parse(e.newValue));
-        } catch {
-          // Invalid JSON
-        }
-      }
-    };
-
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
-
-  // Also poll for changes (since storage event doesn't fire in same tab)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const savedMemory = localStorage.getItem("deepagents-memory");
-      if (savedMemory) {
-        try {
-          const parsed = JSON.parse(savedMemory);
-          setMemoryFiles((prev) => {
-            if (JSON.stringify(prev) !== JSON.stringify(parsed)) {
-              return parsed;
-            }
-            return prev;
-          });
-        } catch {
-          // Ignore
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const clearMemory = () => {
-    localStorage.removeItem("deepagents-memory");
-    setMemoryFiles({});
+  const clearMemory = async () => {
+    await clearAllMemories();
   };
 
   // Handle hover to expand
