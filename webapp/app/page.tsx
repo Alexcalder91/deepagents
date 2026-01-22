@@ -101,7 +101,7 @@ export default function Home() {
     if (!isDragging || !containerRef.current) return;
 
     const containerRect = containerRef.current.getBoundingClientRect();
-    const activityWidth = activitySidebarOpen ? 380 : 0;
+    const activityWidth = activitySidebarOpen ? 240 : 0;
     const availableWidth = containerRect.width - activityWidth;
     const mouseX = e.clientX - containerRect.left - 48; // Account for settings sidebar
 
@@ -169,6 +169,24 @@ export default function Home() {
           promptConfig: {
             systemPrompt: config.mainAgentSystemPrompt,
             canvasToolDescription: config.canvasToolDescription,
+            // Filesystem tool descriptions
+            listFilesDescription: config.listFilesDescription,
+            readFileDescription: config.readFileDescription,
+            writeFileDescription: config.writeFileDescription,
+            editFileDescription: config.editFileDescription,
+            globDescription: config.globDescription,
+            grepDescription: config.grepDescription,
+            executeDescription: config.executeDescription,
+            // System prompts
+            filesystemSystemPrompt: config.filesystemSystemPrompt,
+            executionSystemPrompt: config.executionSystemPrompt,
+            // Subagent config
+            taskToolDescription: config.taskToolDescription,
+            taskSystemPrompt: config.taskSystemPrompt,
+            defaultSubagentPrompt: config.defaultSubagentPrompt,
+            // Feature prompts
+            skillsSystemPrompt: config.skillsSystemPrompt,
+            memorySystemPrompt: config.memorySystemPrompt,
           },
         }),
       });
@@ -398,7 +416,7 @@ export default function Home() {
 
   // Calculate main content width based on what panels are open
   const getMainWidth = () => {
-    const activityWidth = activitySidebarOpen ? 380 : 0;
+    const activityWidth = activitySidebarOpen ? 240 : 0;
     if (canvas.isOpen) {
       // Use split ratio when canvas is open
       return `calc((100% - ${activityWidth}px - 48px) * ${splitRatio})`;
@@ -408,7 +426,7 @@ export default function Home() {
   };
 
   const getCanvasWidth = () => {
-    const activityWidth = activitySidebarOpen ? 380 : 0;
+    const activityWidth = activitySidebarOpen ? 240 : 0;
     return `calc((100% - ${activityWidth}px - 48px) * ${1 - splitRatio})`;
   };
 
@@ -659,7 +677,7 @@ export default function Home() {
           <div
             style={{
               ...styles.divider,
-              left: `calc(48px + (100% - ${activitySidebarOpen ? 380 : 0}px - 48px) * ${splitRatio})`,
+              left: `calc(48px + (100% - ${activitySidebarOpen ? 240 : 0}px - 48px) * ${splitRatio})`,
             }}
             onMouseDown={handleMouseDown}
             className="split-divider"

@@ -25,6 +25,8 @@ export default function Canvas({
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [localTitle, setLocalTitle] = useState(title);
   const [isSaving, setIsSaving] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedContentRef = useRef<string>("");
   const isInitializedRef = useRef(false);
@@ -139,6 +141,136 @@ export default function Canvas({
 
   const handleClearFormatting = () => execCommand("removeFormat");
 
+  // Close export menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+
+    if (showExportMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showExportMenu]);
+
+  // Export functions
+  const getMarkdownContent = () => {
+    if (contentRef.current) {
+      return convertHtmlToMarkdown(contentRef.current.innerHTML);
+    }
+    return content;
+  };
+
+  const handleExportPDF = async () => {
+    setShowExportMenu(false);
+    const markdownContent = getMarkdownContent();
+    const docTitle = title || "Untitled Document";
+
+    // Create a printable HTML document
+    const printWindow = window.open("", "_blank");
+    if (printWindow) {
+      const htmlContent = formatMarkdownToHtml(markdownContent);
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>${docTitle}</title>
+            <style>
+              body {
+                font-family: 'Georgia', 'Times New Roman', serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 40px;
+                line-height: 1.8;
+                color: #333;
+              }
+              h1 { font-size: 1.75em; font-weight: 600; margin: 0.67em 0; }
+              h2 { font-size: 1.5em; font-weight: 600; margin: 0.75em 0; }
+              h3 { font-size: 1.25em; font-weight: 600; margin: 0.83em 0; }
+              p { margin: 0.5em 0; }
+              ul, ol { margin: 0.5em 0; padding-left: 1.5em; }
+              li { margin: 0.25em 0; }
+              strong, b { font-weight: 600; }
+              em, i { font-style: italic; }
+              @media print {
+                body { padding: 20px; }
+              }
+            </style>
+          </head>
+          <body>
+            <h1>${docTitle}</h1>
+            ${htmlContent}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.print();
+    }
+  };
+
+  const handleExportGoogleDrive = async () => {
+    setShowExportMenu(false);
+    const markdownContent = getMarkdownContent();
+    const docTitle = title || "Untitled Document";
+
+    // Create a blob with the content
+    const blob = new Blob([markdownContent], { type: "text/plain" });
+    const file = new File([blob], `${docTitle}.txt`, { type: "text/plain" });
+
+    // Check if the Web Share API with files is supported
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: docTitle,
+        });
+      } catch (err) {
+        // User cancelled or error occurred, fall back to Google Drive URL
+        openGoogleDriveUpload(markdownContent, docTitle);
+      }
+    } else {
+      // Fall back to opening Google Drive upload page
+      openGoogleDriveUpload(markdownContent, docTitle);
+    }
+  };
+
+  const openGoogleDriveUpload = (content: string, docTitle: string) => {
+    // Create a blob and download it first, then provide instructions
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${docTitle}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Open Google Drive in a new tab
+    window.open("https://drive.google.com/drive/my-drive", "_blank");
+  };
+
+  const handleExportTxt = () => {
+    setShowExportMenu(false);
+    const markdownContent = getMarkdownContent();
+    const docTitle = title || "Untitled Document";
+
+    const blob = new Blob([markdownContent], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${docTitle}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // Keyboard shortcuts
   const handleEditorKeyDown = (e: React.KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey) {
@@ -206,6 +338,63 @@ export default function Canvas({
           )}
         </div>
         <div style={styles.canvasHeaderRight}>
+          {/* Export Dropdown */}
+          <div style={styles.exportDropdownContainer} ref={exportMenuRef}>
+            <button
+              style={styles.canvasHeaderBtn}
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              title="Export document"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </button>
+            {showExportMenu && (
+              <div style={styles.exportMenu}>
+                <button
+                  className="export-menu-item"
+                  style={styles.exportMenuItem}
+                  onClick={handleExportPDF}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                  </svg>
+                  Download as PDF
+                </button>
+                <button
+                  className="export-menu-item"
+                  style={styles.exportMenuItem}
+                  onClick={handleExportGoogleDrive}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                    <path d="M2 17l10 5 10-5"></path>
+                    <path d="M2 12l10 5 10-5"></path>
+                  </svg>
+                  Export to Google Drive
+                </button>
+                <button
+                  className="export-menu-item"
+                  style={styles.exportMenuItem}
+                  onClick={handleExportTxt}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                  </svg>
+                  Download as TXT
+                </button>
+              </div>
+            )}
+          </div>
           <button
             style={styles.canvasHeaderBtn}
             onClick={() => {
@@ -427,6 +616,11 @@ export default function Canvas({
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.5; }
+        }
+
+        /* Export menu item hover */
+        .export-menu-item:hover {
+          background: rgba(255, 255, 255, 0.1) !important;
         }
 
         /* Rich text editor styles */
@@ -710,5 +904,35 @@ const styles: { [key: string]: React.CSSProperties } = {
   editHint: {
     fontSize: "0.75rem",
     color: "var(--muted)",
+  },
+  exportDropdownContainer: {
+    position: "relative",
+  },
+  exportMenu: {
+    position: "absolute",
+    top: "100%",
+    right: 0,
+    marginTop: "0.25rem",
+    background: "#2a2a2a",
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+    zIndex: 1000,
+    minWidth: "200px",
+    overflow: "hidden",
+  },
+  exportMenuItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    width: "100%",
+    padding: "0.75rem 1rem",
+    background: "transparent",
+    border: "none",
+    color: "var(--foreground)",
+    fontSize: "0.875rem",
+    cursor: "pointer",
+    textAlign: "left",
+    transition: "background 0.15s",
   },
 };
