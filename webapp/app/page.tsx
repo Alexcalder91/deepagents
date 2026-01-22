@@ -1,20 +1,30 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import Canvas from "./components/Canvas";
 import ToolTimeline, { ToolStep } from "./components/ToolTimeline";
 import ToolActivitySidebar, { ToolActivity } from "./components/ToolActivitySidebar";
+import SettingsSidebar from "./components/SettingsSidebar";
+import CanvasPreview from "./components/CanvasPreview";
+import { usePromptConfig } from "./contexts/PromptConfigContext";
+
+interface CanvasData {
+  title: string;
+  content: string;
+}
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   toolSteps?: ToolStep[];
+  canvas?: CanvasData; // Canvas attached to this message
 }
 
 interface CanvasState {
   isOpen: boolean;
+  messageId: string | null; // Which message's canvas is open
   title: string;
   content: string;
   isStreaming: boolean;
@@ -26,6 +36,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [canvas, setCanvas] = useState<CanvasState>({
     isOpen: false,
+    messageId: null,
     title: "",
     content: "",
     isStreaming: false,
@@ -33,7 +44,20 @@ export default function Home() {
   const [currentToolSteps, setCurrentToolSteps] = useState<ToolStep[]>([]);
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
   const [activitySidebarOpen, setActivitySidebarOpen] = useState(false);
+  const [splitRatio, setSplitRatio] = useState(0.34); // Chat takes 34%, canvas takes 66%
+  const [isDragging, setIsDragging] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { config } = usePromptConfig();
+
+  // Pending canvas data while streaming (before attaching to message)
+  const [pendingCanvas, setPendingCanvas] = useState<CanvasData | null>(null);
+  const pendingCanvasRef = useRef<CanvasData | null>(null);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    pendingCanvasRef.current = pendingCanvas;
+  }, [pendingCanvas]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -42,6 +66,51 @@ export default function Home() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, currentToolSteps]);
+
+  // Handle drag for resizable split view
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDragging || !containerRef.current) return;
+
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const activityWidth = activitySidebarOpen ? 380 : 0;
+    const availableWidth = containerRect.width - activityWidth;
+    const mouseX = e.clientX - containerRect.left - 48; // Account for settings sidebar
+
+    // Calculate ratio (chat width / available width)
+    let newRatio = mouseX / availableWidth;
+    // Clamp between 20% and 80%
+    newRatio = Math.max(0.2, Math.min(0.8, newRatio));
+    setSplitRatio(newRatio);
+  }, [isDragging, activitySidebarOpen]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    } else {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [isDragging, handleMouseMove, handleMouseUp]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,6 +141,10 @@ export default function Home() {
             content: m.content,
           })),
           canvasContent: canvas.content,
+          promptConfig: {
+            systemPrompt: config.mainAgentSystemPrompt,
+            canvasToolDescription: config.canvasToolDescription,
+          },
         }),
       });
 
@@ -103,15 +176,21 @@ export default function Home() {
             if (line.startsWith("data: ")) {
               const data = line.slice(6);
               if (data === "[DONE]") {
-                // Finalize tool steps in the message
+                // Finalize tool steps and canvas in the message
+                const finalCanvas = pendingCanvasRef.current;
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantMessage.id
-                      ? { ...m, toolSteps: [...currentToolSteps] }
+                      ? {
+                          ...m,
+                          toolSteps: [...currentToolSteps],
+                          canvas: finalCanvas || undefined,
+                        }
                       : m
                   )
                 );
                 setCanvas((prev) => ({ ...prev, isStreaming: false }));
+                setPendingCanvas(null);
                 continue;
               }
               try {
@@ -183,15 +262,24 @@ export default function Home() {
                     )
                   );
                 }
-                // Handle canvas tool use
+                // Handle canvas tool use - don't auto-open, just store the data
                 else if (parsed.type === "canvas_create") {
-                  setCanvas({
-                    isOpen: true,
+                  const newCanvas = {
                     title: parsed.title || "Untitled Document",
                     content: "",
+                  };
+                  setPendingCanvas(newCanvas);
+                  // Update canvas state for streaming indicator but don't open
+                  setCanvas((prev) => ({
+                    ...prev,
+                    title: newCanvas.title,
+                    content: "",
                     isStreaming: true,
-                  });
+                  }));
                 } else if (parsed.type === "canvas_content") {
+                  setPendingCanvas((prev) =>
+                    prev ? { ...prev, content: prev.content + parsed.content } : null
+                  );
                   setCanvas((prev) => ({
                     ...prev,
                     content: prev.content + parsed.content,
@@ -233,31 +321,76 @@ export default function Home() {
   };
 
   const handleCanvasClose = () => {
-    setCanvas((prev) => ({ ...prev, isOpen: false }));
+    setCanvas((prev) => ({ ...prev, isOpen: false, messageId: null }));
   };
 
   const handleCanvasContentChange = (content: string) => {
     setCanvas((prev) => ({ ...prev, content }));
+    // Also update the message's canvas content
+    if (canvas.messageId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === canvas.messageId && m.canvas
+            ? { ...m, canvas: { ...m.canvas, content } }
+            : m
+        )
+      );
+    }
   };
 
   const handleCanvasTitleChange = (title: string) => {
     setCanvas((prev) => ({ ...prev, title }));
+    // Also update the message's canvas title
+    if (canvas.messageId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === canvas.messageId && m.canvas
+            ? { ...m, canvas: { ...m.canvas, title } }
+            : m
+        )
+      );
+    }
+  };
+
+  const openCanvasFromMessage = (messageId: string) => {
+    const message = messages.find((m) => m.id === messageId);
+    if (message?.canvas) {
+      setCanvas({
+        isOpen: true,
+        messageId: messageId,
+        title: message.canvas.title,
+        content: message.canvas.content,
+        isStreaming: false,
+      });
+    }
   };
 
   // Calculate main content width based on what panels are open
   const getMainWidth = () => {
-    if (canvas.isOpen && activitySidebarOpen) return "calc(100% - 380px - 50%)";
-    if (canvas.isOpen) return "50%";
-    if (activitySidebarOpen) return "calc(100% - 380px)";
+    const activityWidth = activitySidebarOpen ? 380 : 0;
+    if (canvas.isOpen) {
+      // Use split ratio when canvas is open
+      return `calc((100% - ${activityWidth}px - 48px) * ${splitRatio})`;
+    }
+    if (activitySidebarOpen) return `calc(100% - ${activityWidth}px)`;
     return "100%";
   };
 
+  const getCanvasWidth = () => {
+    const activityWidth = activitySidebarOpen ? 380 : 0;
+    return `calc((100% - ${activityWidth}px - 48px) * ${1 - splitRatio})`;
+  };
+
   return (
-    <div style={styles.pageContainer}>
+    <div ref={containerRef} style={styles.pageContainer}>
+      {/* Settings Sidebar (Left) */}
+      <SettingsSidebar />
+
       <div
         style={{
           ...styles.container,
           width: getMainWidth(),
+          marginLeft: "48px", // Account for collapsed settings sidebar
         }}
       >
         <header style={styles.header}>
@@ -334,51 +467,72 @@ export default function Home() {
               </div>
             ) : (
               <div style={styles.messages}>
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    style={{
-                      ...styles.messageRow,
-                      justifyContent:
-                        message.role === "user" ? "flex-end" : "flex-start",
-                    }}
-                  >
-                    <div
-                      style={{
-                        ...styles.message,
-                        ...(message.role === "user"
-                          ? styles.userMessage
-                          : styles.assistantMessage),
-                      }}
-                    >
-                      {message.role === "assistant" && message.toolSteps && message.toolSteps.length > 0 && (
-                        <ToolTimeline steps={message.toolSteps} />
-                      )}
-                      {message.role === "assistant" ? (
-                        <div className="markdown-content">
-                          <ReactMarkdown>{message.content}</ReactMarkdown>
-                        </div>
-                      ) : (
-                        message.content
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {isLoading && (
-                  <div style={{ ...styles.messageRow, justifyContent: "flex-start" }}>
-                    <div style={{ ...styles.message, ...styles.assistantMessage }}>
-                      {currentToolSteps.length > 0 ? (
-                        <ToolTimeline steps={currentToolSteps} />
-                      ) : (
-                        <div style={styles.typingIndicator}>
-                          <span style={styles.dot}></span>
-                          <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
-                          <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
+                {messages.map((message, index) => {
+                  const isLastAssistant = message.role === "assistant" && index === messages.length - 1;
+                  const showToolTimeline = message.role === "assistant" &&
+                    message.toolSteps &&
+                    message.toolSteps.length > 0 &&
+                    !(isLastAssistant && isLoading); // Don't show if we're still loading this message
+
+                  return (
+                    <div key={message.id}>
+                      {/* User messages get their own bubble */}
+                      {message.role === "user" && (
+                        <div style={{ ...styles.messageRow, justifyContent: "flex-end" }}>
+                          <div style={{ ...styles.message, ...styles.userMessage }}>
+                            {message.content}
+                          </div>
                         </div>
                       )}
+
+                      {/* Assistant messages flow directly in chat */}
+                      {message.role === "assistant" && (
+                        <>
+                          {/* Tool timeline for completed messages */}
+                          {showToolTimeline && (
+                            <div style={styles.toolTimelineContainer}>
+                              <ToolTimeline steps={message.toolSteps!} isCollapsed={!isLastAssistant} />
+                            </div>
+                          )}
+
+                          {/* Show current tool steps only for the message being streamed */}
+                          {isLastAssistant && isLoading && currentToolSteps.length > 0 && (
+                            <div style={styles.toolTimelineContainer}>
+                              <ToolTimeline steps={currentToolSteps} />
+                            </div>
+                          )}
+
+                          {/* Message content */}
+                          {message.content && (
+                            <div style={styles.assistantContent}>
+                              <div className="markdown-content">
+                                <ReactMarkdown>{message.content}</ReactMarkdown>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Canvas preview card */}
+                          {message.canvas && (
+                            <CanvasPreview
+                              title={message.canvas.title}
+                              content={message.canvas.content}
+                              onOpen={() => openCanvasFromMessage(message.id)}
+                            />
+                          )}
+
+                          {/* Typing indicator when loading but no content yet */}
+                          {isLastAssistant && isLoading && !message.content && currentToolSteps.length === 0 && (
+                            <div style={styles.typingIndicator}>
+                              <span style={styles.dot}></span>
+                              <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
+                              <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </div>
             )}
@@ -422,22 +576,37 @@ export default function Home() {
       </div>
 
       {canvas.isOpen && (
-        <div
-          style={{
-            ...styles.canvasWrapper,
-            right: activitySidebarOpen ? "380px" : "0",
-          }}
-        >
-          <Canvas
-            content={canvas.content}
-            title={canvas.title}
-            isOpen={canvas.isOpen}
-            isStreaming={canvas.isStreaming}
-            onClose={handleCanvasClose}
-            onContentChange={handleCanvasContentChange}
-            onTitleChange={handleCanvasTitleChange}
-          />
-        </div>
+        <>
+          {/* Draggable divider */}
+          <div
+            style={{
+              ...styles.divider,
+              left: `calc(48px + (100% - ${activitySidebarOpen ? 380 : 0}px - 48px) * ${splitRatio})`,
+            }}
+            onMouseDown={handleMouseDown}
+            className="split-divider"
+          >
+            <div style={styles.dividerHandle} />
+          </div>
+
+          <div
+            style={{
+              ...styles.canvasWrapper,
+              width: getCanvasWidth(),
+              right: activitySidebarOpen ? "380px" : "0",
+            }}
+          >
+            <Canvas
+              content={canvas.content}
+              title={canvas.title}
+              isOpen={canvas.isOpen}
+              isStreaming={canvas.isStreaming}
+              onClose={handleCanvasClose}
+              onContentChange={handleCanvasContentChange}
+              onTitleChange={handleCanvasTitleChange}
+            />
+          </div>
+        </>
       )}
 
       {/* Activity Sidebar */}
@@ -526,11 +695,29 @@ const styles: { [key: string]: React.CSSProperties } = {
     transition: "width 0.3s ease",
   },
   canvasWrapper: {
-    width: "50%",
     height: "100vh",
     position: "fixed",
     top: 0,
-    transition: "right 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+  },
+  divider: {
+    position: "fixed",
+    top: 0,
+    width: "8px",
+    height: "100vh",
+    cursor: "col-resize",
+    zIndex: 101,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "transparent",
+    transition: "background 0.2s",
+  },
+  dividerHandle: {
+    width: "4px",
+    height: "40px",
+    borderRadius: "2px",
+    background: "var(--border)",
+    transition: "all 0.2s",
   },
   header: {
     padding: "1rem 2rem",
@@ -666,6 +853,13 @@ const styles: { [key: string]: React.CSSProperties } = {
     background: "var(--card)",
     border: "1px solid var(--border)",
     borderBottomLeftRadius: "4px",
+  },
+  assistantContent: {
+    padding: "0.5rem 0",
+    lineHeight: 1.6,
+  },
+  toolTimelineContainer: {
+    padding: "0.5rem 0",
   },
   typingIndicator: {
     display: "flex",

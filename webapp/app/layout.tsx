@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { PromptConfigProvider } from "./contexts/PromptConfigContext";
 
 export const metadata: Metadata = {
   title: "DeepAgents Chat",
@@ -13,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <PromptConfigProvider>{children}</PromptConfigProvider>
+      </body>
     </html>
   );
 }

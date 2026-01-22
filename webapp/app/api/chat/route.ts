@@ -4,7 +4,8 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are DeepAgent, an AI assistant powered by Claude and the DeepAgents framework.
+// Default system prompt - can be overridden by client config
+const DEFAULT_SYSTEM_PROMPT = `You are DeepAgent, an AI assistant powered by Claude and the DeepAgents framework.
 
 DeepAgents is a Python-based agent framework built on LangChain and LangGraph that enables:
 - Intelligent task planning and execution
@@ -52,13 +53,15 @@ Write the complete content in one tool call. The content supports basic markdown
 
 Be concise but thorough. Use markdown formatting when helpful.`;
 
-// Define the canvas tool with reasoning parameter
-const tools: Anthropic.Tool[] = [
-  {
-    name: "create_canvas",
-    description:
-      "Creates a document canvas in the UI to display long-form content like articles, blog posts, proposals, code files, reports, etc. Use this when the user asks you to write, create, or draft substantial content that would benefit from a dedicated document view.",
-    input_schema: {
+const DEFAULT_CANVAS_TOOL_DESCRIPTION = `Creates a document canvas in the UI to display long-form content like articles, blog posts, proposals, code files, reports, etc. Use this when the user asks you to write, create, or draft substantial content that would benefit from a dedicated document view.`;
+
+// Create tools with configurable descriptions
+function createTools(canvasDescription?: string): Anthropic.Tool[] {
+  return [
+    {
+      name: "create_canvas",
+      description: canvasDescription || DEFAULT_CANVAS_TOOL_DESCRIPTION,
+      input_schema: {
       type: "object" as const,
       properties: {
         reasoning: {
@@ -79,7 +82,8 @@ const tools: Anthropic.Tool[] = [
       required: ["reasoning", "title", "content"],
     },
   },
-];
+  ];
+}
 
 // Generate a reasoning message for tool usage
 function getToolReasoning(toolName: string, input: Record<string, unknown>): string {
@@ -93,12 +97,19 @@ function getToolReasoning(toolName: string, input: Record<string, unknown>): str
   return defaults[toolName] || "Processing request";
 }
 
+interface PromptConfig {
+  systemPrompt?: string;
+  canvasToolDescription?: string;
+}
+
 export async function POST(req: Request) {
   try {
-    const { messages, canvasContent } = await req.json();
+    const { messages, canvasContent, promptConfig } = await req.json();
 
-    // Add canvas context if there's existing content
-    let systemPrompt = SYSTEM_PROMPT;
+    // Use custom prompts from config if provided, otherwise use defaults
+    const config: PromptConfig = promptConfig || {};
+    let systemPrompt = config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const tools = createTools(config.canvasToolDescription);
     if (canvasContent) {
       systemPrompt += `\n\n## Current Canvas Content\nThe user has a canvas open with the following content:\n\`\`\`\n${canvasContent}\n\`\`\`\nYou can reference or modify this content if the user asks.`;
     }
@@ -144,9 +155,16 @@ export async function POST(req: Request) {
           // Process the response
           for (const block of response.content) {
             if (block.type === "text") {
-              // Stream text content
-              const data = JSON.stringify({ content: block.text });
-              controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+              // Stream text content in chunks for smooth animation
+              const text = block.text;
+              const chunkSize = 5; // Characters per chunk for chat text
+              for (let i = 0; i < text.length; i += chunkSize) {
+                const chunk = text.slice(i, i + chunkSize);
+                const data = JSON.stringify({ content: chunk });
+                controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+                // Small delay for streaming effect
+                await new Promise((resolve) => setTimeout(resolve, 5));
+              }
             } else if (block.type === "tool_use" && block.name === "create_canvas") {
               const input = block.input as { reasoning: string; title: string; content: string };
               const stepId = `step_${Date.now()}`;

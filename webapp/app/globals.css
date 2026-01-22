@@ -97,3 +97,69 @@ a {
   margin: 1em 0;
   color: var(--muted);
 }
+
+/* Settings sidebar hover effects */
+.settings-sidebar button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-icon-button:hover {
+  background: rgba(99, 102, 241, 0.15) !important;
+  color: var(--accent) !important;
+}
+
+.settings-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-prompt-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--foreground);
+}
+
+.settings-category-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-reset-button:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.settings-back-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--foreground);
+}
+
+/* Textarea focus state */
+.settings-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+}
+
+/* Split divider hover effects */
+.split-divider:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.split-divider:hover > div {
+  background: var(--accent);
+  height: 60px;
+}
+
+.split-divider:active {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.split-divider:active > div {
+  background: var(--accent);
+  height: 80px;
+}
+
+/* Canvas preview hover effect */
+.canvas-preview:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
