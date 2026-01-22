@@ -62,3 +62,136 @@ model PromptConfig {
 
   @@map("prompt_configs")
 }
+
+// ============================================
+// Agent Builder Models
+// ============================================
+
+// Agent - the main entity for configured agents
+model Agent {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?  @db.Text
+  instructions String   @db.Text @default("")
+  model        String   @default("claude-sonnet-4-5-20250929")
+  isActive     Boolean  @default(true)
+  canvasState  Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tools     AgentTool[]
+  subagents AgentSubagent[]
+  skills    AgentSkill[]
+  triggers  AgentTrigger[]
+  testChats AgentTestChat[]
+
+  @@map("agents")
+}
+
+// AgentTool - tool configuration for an agent
+model AgentTool {
+  id                String   @id @default(cuid())
+  agentId           String
+  agent             Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  toolType          String
+  toolName          String
+  toolConfig        Json?
+  requiresReview    Boolean  @default(false)
+  reviewDestination String?
+  reviewConfig      Json?
+  positionX         Float    @default(0)
+  positionY         Float    @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("agent_tools")
+}
+
+// AgentSubagent - subagent configuration
+model AgentSubagent {
+  id           String   @id @default(cuid())
+  agentId      String
+  agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  name         String
+  description  String   @db.Text
+  systemPrompt String   @db.Text
+  model        String?
+  toolIds      String[]
+  positionX    Float    @default(0)
+  positionY    Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("agent_subagents")
+}
+
+// AgentSkill - skill configuration
+model AgentSkill {
+  id               String   @id @default(cuid())
+  agentId          String
+  agent            Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  skillPath        String
+  skillName        String
+  skillDescription String?  @db.Text
+  positionX        Float    @default(0)
+  positionY        Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("agent_skills")
+}
+
+// AgentTrigger - trigger configuration
+model AgentTrigger {
+  id          String   @id @default(cuid())
+  agentId     String
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  triggerType String
+  name        String
+  description String?
+  config      Json
+  isEnabled   Boolean  @default(true)
+  positionX   Float    @default(0)
+  positionY   Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("agent_triggers")
+}
+
+// AgentTestChat - test chat sessions
+model AgentTestChat {
+  id        String   @id @default(cuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  title     String   @default("Test Session")
+  messages  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agentId])
+  @@map("agent_test_chats")
+}
+
+// ToolApproval - pending tool approval requests
+model ToolApproval {
+  id             String    @id @default(cuid())
+  executionId    String
+  toolName       String
+  toolInput      Json
+  status         String
+  modifiedInput  Json?
+  notifiedVia    String?
+  notificationId String?
+  createdAt      DateTime  @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+
+  @@index([executionId])
+  @@index([status])
+  @@map("tool_approvals")
+}
