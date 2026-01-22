@@ -462,6 +462,74 @@ function createTools(config: ExtendedPromptConfig = {}): Anthropic.Tool[] {
       },
     },
     {
+      name: "todo_list",
+      description: `Create or update a todo list that appears inline in the chat. Use this FIRST when starting any multi-step task to show the user what you're working on. The todo list displays in the chat window with real-time progress tracking. Update individual items as you complete them.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of what you're planning to do.",
+          },
+          title: {
+            type: "string",
+            description: "A title for the todo list (e.g., 'Duck Species Research', 'Building API').",
+          },
+          items: {
+            type: "array",
+            description: "Array of todo items.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Unique identifier for this item (e.g., 'item-1', 'research-mallard').",
+                },
+                content: {
+                  type: "string",
+                  description: "What needs to be done (imperative form, e.g., 'Research mallard ducks').",
+                },
+                activeForm: {
+                  type: "string",
+                  description: "Present continuous form shown when in progress (e.g., 'Researching mallard ducks').",
+                },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "completed", "failed"],
+                  description: "Current status of this item.",
+                },
+              },
+              required: ["id", "content", "status"],
+            },
+          },
+        },
+        required: ["reasoning", "items"],
+      },
+    },
+    {
+      name: "update_todo",
+      description: `Update the status of a specific todo item. Use this to mark items as in_progress when starting work, and completed when done.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of this status update.",
+          },
+          item_id: {
+            type: "string",
+            description: "The ID of the todo item to update.",
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed", "failed"],
+            description: "New status for the item.",
+          },
+        },
+        required: ["reasoning", "item_id", "status"],
+      },
+    },
+    {
       name: "create_plan",
       description: `Create a structured plan for completing a complex task. Use this when the user asks you to plan something, break down a task, or when you need to coordinate multiple steps or subagents. The plan will be displayed in the UI as a checklist that tracks progress.`,
       input_schema: {
@@ -845,13 +913,17 @@ function createSharedDocument(id: string, title: string): SharedDocument {
   return doc;
 }
 
+// Callback type for notifying about document updates
+type DocumentUpdateCallback = (docId: string, fullContent: string) => void;
+
 // Add or update a section in the shared document (thread-safe with locking)
 function writeDocumentSection(
   docId: string,
   sectionId: string,
   sectionTitle: string,
   content: string,
-  author: string
+  author: string,
+  onUpdate?: DocumentUpdateCallback
 ): { success: boolean; message: string } {
   const doc = sharedDocuments[docId];
   if (!doc) {
@@ -869,6 +941,14 @@ function writeDocumentSection(
   // Add to order if new
   if (!doc.order.includes(sectionId)) {
     doc.order.push(sectionId);
+  }
+
+  // Notify about update
+  if (onUpdate) {
+    const fullContent = getSharedDocumentContent(docId);
+    if (fullContent) {
+      onUpdate(docId, fullContent);
+    }
   }
 
   return { success: true, message: `Section "${sectionTitle}" written successfully` };
@@ -933,7 +1013,8 @@ async function executeSubagentTask(
   prompt: string,
   subagentType: string,
   systemPrompt: string,
-  sharedDocId?: string
+  sharedDocId?: string,
+  onDocumentUpdate?: DocumentUpdateCallback
 ): Promise<string> {
   try {
     const hasSharedDoc = sharedDocId && sharedDocuments[sharedDocId];
@@ -1014,7 +1095,8 @@ Provide a clear, concise response that directly addresses the task. Focus on del
                 input.section_id,
                 input.section_title,
                 input.content,
-                description // Use description as author
+                description, // Use description as author
+                onDocumentUpdate // Pass callback for live updates
               );
               result = writeResult.message;
             } else if (block.name === "read_document") {
@@ -1180,7 +1262,19 @@ async function executeTool(
       const subagentType = (input.subagent_type as string) || "general-purpose";
       const sharedDocId = input.shared_doc_id as string | undefined;
       const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
-      output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId);
+
+      // Create callback for live document updates
+      const onDocUpdate: DocumentUpdateCallback = (docId: string, fullContent: string) => {
+        // Stream the updated document content to the canvas
+        const updateData = JSON.stringify({
+          type: "shared_doc_update",
+          docId: docId,
+          content: fullContent,
+        });
+        controller.enqueue(encoder.encode(`data: ${updateData}\n\n`));
+      };
+
+      output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId, onDocUpdate);
       break;
     }
 
@@ -1188,7 +1282,25 @@ async function executeTool(
       const title = input.title as string;
       const docId = `doc_${Date.now()}`;
       createSharedDocument(docId, title);
-      output = `Created shared document "${title}" with ID: ${docId}. Pass this doc_id to your task calls using the shared_doc_id parameter so subagents can write to it.`;
+
+      // Signal canvas creation immediately so the document opens while work is happening
+      const createData = JSON.stringify({
+        type: "canvas_create",
+        title: title,
+        isSharedDoc: true,
+        docId: docId,
+      });
+      controller.enqueue(encoder.encode(`data: ${createData}\n\n`));
+
+      // Send initial placeholder content
+      const initialContent = `# ${title}\n\n*Document is being prepared by subagents...*\n\n---\n\n`;
+      const contentData = JSON.stringify({
+        type: "canvas_content",
+        content: initialContent,
+      });
+      controller.enqueue(encoder.encode(`data: ${contentData}\n\n`));
+
+      output = `Created shared document "${title}" with ID: ${docId}. The document is now open in the canvas. Pass this doc_id to your task calls using the shared_doc_id parameter so subagents can write to it.`;
       break;
     }
 
@@ -1200,6 +1312,54 @@ async function executeTool(
       } else {
         output = `Document ${docId} not found or is empty.`;
       }
+      break;
+    }
+
+    case "todo_list": {
+      const todoInput = input as {
+        title?: string;
+        items: Array<{
+          id: string;
+          content: string;
+          activeForm?: string;
+          status: string;
+        }>;
+      };
+
+      // Send todo list event to the UI
+      const todoData = JSON.stringify({
+        type: "todo_list_create",
+        todoList: {
+          id: `todo_${Date.now()}`,
+          title: todoInput.title,
+          items: todoInput.items.map((item) => ({
+            ...item,
+            status: item.status || "pending",
+          })),
+          createdAt: Date.now(),
+        },
+      });
+      controller.enqueue(encoder.encode(`data: ${todoData}\n\n`));
+
+      output = `Created todo list with ${todoInput.items.length} items. The list is now visible in the chat. I will now begin working through the items.`;
+      break;
+    }
+
+    case "update_todo": {
+      const updateTodoInput = input as {
+        item_id: string;
+        status: string;
+      };
+
+      // Send todo update event to the UI
+      const todoUpdateData = JSON.stringify({
+        type: "todo_update",
+        item_id: updateTodoInput.item_id,
+        status: updateTodoInput.status,
+      });
+      controller.enqueue(encoder.encode(`data: ${todoUpdateData}\n\n`));
+
+      output = `Updated todo item "${updateTodoInput.item_id}" to status "${updateTodoInput.status}".`;
       break;
     }
 
@@ -1315,46 +1475,83 @@ export async function POST(req: Request) {
       systemPrompt += `\n\n## Current Memory\nNo memory file exists yet. Create one using edit_file with path "AGENTS.md" when you need to remember information.`;
     }
 
-    // Add instruction about parallel subagents and shared documents
-    systemPrompt += `\n\n## Subagent Usage & Shared Documents
+    // Add instruction about planning-first workflow and parallel subagents
+    systemPrompt += `\n\n## CRITICAL: Planning-First Workflow
 
-When you need multiple subagents to contribute to a single document (research reports, collaborative writing, etc.):
+**ALWAYS start complex tasks with a todo list.** When a user asks you to do anything that involves multiple steps:
 
-### CRITICAL WORKFLOW for multi-subagent research/writing tasks:
+### Step 1: Create a Todo List FIRST
+Use the \`todo_list\` tool immediately to show the user what you're going to do. This appears inline in the chat.
 
-1. **First**, create a shared document using \`create_shared_doc\` with a descriptive title
-2. **Then**, launch ALL subagents in parallel with the \`task\` tool, passing the \`shared_doc_id\` to each
-3. **Wait** for all subagents to complete - they will write their sections directly to the shared document
-4. **Retrieve** the compiled document using \`get_shared_doc\`
-5. **Present** the full document to the user using \`create_canvas\`
-
-### Example workflow:
-
+Example for "Research 10 duck species":
 \`\`\`
-User: "Research and write about 5 algebra topics"
-
-Step 1: create_shared_doc with title "Algebra Research"
-        → Returns doc_id: "doc_123"
-
-Step 2: Launch 5 task calls IN PARALLEL, each with shared_doc_id: "doc_123"
-        - task: "Research polynomials" (shared_doc_id: "doc_123")
-        - task: "Research rational functions" (shared_doc_id: "doc_123")
-        - task: "Research exponentials" (shared_doc_id: "doc_123")
-        - task: "Research systems" (shared_doc_id: "doc_123")
-        - task: "Research sequences" (shared_doc_id: "doc_123")
-
-Step 3: After all complete, call get_shared_doc with doc_id: "doc_123"
-        → Returns the full compiled document with all sections
-
-Step 4: Call create_canvas with the full document content
-        → User sees the complete research document
+todo_list({
+  title: "Duck Species Research",
+  items: [
+    { id: "setup", content: "Create shared document", activeForm: "Creating shared document", status: "pending" },
+    { id: "mallard", content: "Research Mallard ducks", activeForm: "Researching Mallard ducks", status: "pending" },
+    { id: "wood", content: "Research Wood Ducks", activeForm: "Researching Wood Ducks", status: "pending" },
+    // ... more items
+    { id: "compile", content: "Compile final report", activeForm: "Compiling final report", status: "pending" }
+  ]
+})
 \`\`\`
 
-### Key points:
-- Subagents will automatically write their research to the shared document
-- The shared_doc_id parameter is REQUIRED for collaborative documents
-- Always retrieve and present the shared document at the end
-- DO NOT just show a plan - show the ACTUAL CONTENT the subagents wrote`;
+### Step 2: Update Todo Status as You Work
+Before starting each task, call \`update_todo\` to mark it as "in_progress".
+After completing each task, call \`update_todo\` to mark it as "completed".
+
+### Step 3: For Multi-Subagent Tasks
+When you need multiple subagents to work on a document:
+
+1. **Create a shared document** using \`create_shared_doc\` - this opens the canvas immediately
+2. **Launch ALL subagents IN PARALLEL** - call multiple \`task\` tools in the SAME response
+3. **Wait for completion** - all subagents run concurrently
+4. **Retrieve and finalize** - use \`get_shared_doc\` to get the compiled content
+
+### IMPORTANT: Parallel Execution
+To run tasks in parallel, you MUST include multiple \`task\` tool calls in a single response.
+
+Example (correct - runs in parallel):
+\`\`\`
+[In a single response:]
+task({ description: "Research Mallard", prompt: "...", shared_doc_id: "doc_123" })
+task({ description: "Research Wood Duck", prompt: "...", shared_doc_id: "doc_123" })
+task({ description: "Research Mandarin", prompt: "...", shared_doc_id: "doc_123" })
+\`\`\`
+
+Example (WRONG - runs sequentially):
+\`\`\`
+[Response 1:] task({ description: "Research Mallard", ... })
+[Response 2:] task({ description: "Research Wood Duck", ... })
+[Response 3:] task({ description: "Research Mandarin", ... })
+\`\`\`
+
+### Complete Example Workflow
+
+User: "Research and write about 5 duck species"
+
+**Your Response 1:**
+1. Call \`todo_list\` with all tasks
+2. Call \`update_todo\` to mark "Create shared document" as in_progress
+3. Call \`create_shared_doc\` with title "Duck Species Research"
+4. Call \`update_todo\` to mark "Create shared document" as completed
+5. Call \`update_todo\` to mark ALL research items as in_progress (since they'll run in parallel)
+6. Call FIVE \`task\` tools in the SAME response with shared_doc_id
+
+**Your Response 2:** (after subagents complete)
+1. Call \`update_todo\` to mark all research items as completed
+2. Call \`get_shared_doc\` to retrieve the compiled document
+3. Call \`update_todo\` to mark "Compile final report" as completed
+4. Summarize the work done
+
+### Key Rules:
+- ALWAYS create a todo list first for any multi-step task
+- ALWAYS update todo status as you work (gives user visibility)
+- ALWAYS launch parallel tasks in a SINGLE response
+- The shared document opens immediately in the canvas so users see progress
+- Subagents write directly to the shared document
+- You synthesize and summarize at the end`;
 
     const tools = createTools(config);
     if (canvasContent) {
@@ -1497,6 +1694,16 @@ Step 4: Call create_canvas with the full document content
                   }
                 }
 
+                // Create callback for live document updates during parallel execution
+                const onDocUpdate: DocumentUpdateCallback = (docId: string, fullContent: string) => {
+                  const updateData = JSON.stringify({
+                    type: "shared_doc_update",
+                    docId: docId,
+                    content: fullContent,
+                  });
+                  controller.enqueue(encoder.encode(`data: ${updateData}\n\n`));
+                };
+
                 // Now execute all subagent API calls truly in parallel
                 const taskPromises = taskCalls.map(async (block) => {
                   if (block.type === "tool_use") {
@@ -1507,8 +1714,8 @@ Step 4: Call create_canvas with the full document content
                     const sharedDocId = input.shared_doc_id as string | undefined;
                     const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
 
-                    // Execute subagent (this is the actual parallel work)
-                    const output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId);
+                    // Execute subagent with live update callback (this is the actual parallel work)
+                    const output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt, sharedDocId, onDocUpdate);
 
                     return {
                       toolId: block.id,

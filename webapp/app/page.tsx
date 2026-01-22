@@ -8,6 +8,7 @@ import ToolActivitySidebar, { ToolActivity } from "./components/ToolActivitySide
 import SettingsSidebar from "./components/SettingsSidebar";
 import CanvasPreview from "./components/CanvasPreview";
 import PlanSidebar, { Plan, PlanStep } from "./components/PlanSidebar";
+import TodoListComponent, { TodoList, TodoItem } from "./components/TodoList";
 import { usePromptConfig } from "./contexts/PromptConfigContext";
 import { useChatHistory, ChatMessage } from "./contexts/ChatHistoryContext";
 import { useMemory } from "./contexts/MemoryContext";
@@ -23,6 +24,7 @@ interface Message {
   content: string;
   toolSteps?: ToolStep[];
   canvas?: CanvasData; // Canvas attached to this message
+  todoList?: TodoList; // Todo list attached to this message
 }
 
 interface CanvasState {
@@ -52,6 +54,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [currentPlan, setCurrentPlan] = useState<Plan | null>(null);
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const [currentTodoList, setCurrentTodoList] = useState<TodoList | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevChatIdRef = useRef<string | null>(null);
@@ -178,6 +181,7 @@ export default function Home() {
     setIsLoading(true);
     setCurrentToolSteps([]);
     setToolActivities([]);
+    setCurrentTodoList(null); // Reset todo list for new message
     setActivitySidebarOpen(true); // Auto-open sidebar when work starts
 
     // Mark this chat as streaming
@@ -251,7 +255,7 @@ export default function Home() {
             if (line.startsWith("data: ")) {
               const data = line.slice(6);
               if (data === "[DONE]") {
-                // Finalize tool steps and canvas in the message
+                // Finalize tool steps, canvas, and todo list in the message
                 const finalCanvas = pendingCanvasRef.current;
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -260,6 +264,7 @@ export default function Home() {
                           ...m,
                           toolSteps: [...currentToolSteps],
                           canvas: finalCanvas || undefined,
+                          todoList: currentTodoList || m.todoList,
                         }
                       : m
                   )
@@ -337,20 +342,32 @@ export default function Home() {
                     )
                   );
                 }
-                // Handle canvas tool use - don't auto-open, just store the data
+                // Handle canvas tool use
                 else if (parsed.type === "canvas_create") {
                   const newCanvas = {
                     title: parsed.title || "Untitled Document",
                     content: "",
                   };
                   setPendingCanvas(newCanvas);
-                  // Update canvas state for streaming indicator but don't open
-                  setCanvas((prev) => ({
-                    ...prev,
-                    title: newCanvas.title,
-                    content: "",
-                    isStreaming: true,
-                  }));
+                  // For shared docs, auto-open the canvas immediately
+                  // For regular canvas, just store the data without opening
+                  if (parsed.isSharedDoc) {
+                    setCanvas({
+                      isOpen: true,
+                      messageId: assistantMessage.id,
+                      title: newCanvas.title,
+                      content: "",
+                      isStreaming: true,
+                    });
+                  } else {
+                    // Update canvas state for streaming indicator but don't open
+                    setCanvas((prev) => ({
+                      ...prev,
+                      title: newCanvas.title,
+                      content: "",
+                      isStreaming: true,
+                    }));
+                  }
                 } else if (parsed.type === "canvas_content") {
                   setPendingCanvas((prev) =>
                     prev ? { ...prev, content: prev.content + parsed.content } : null
@@ -359,11 +376,63 @@ export default function Home() {
                     ...prev,
                     content: prev.content + parsed.content,
                   }));
+                } else if (parsed.type === "shared_doc_update") {
+                  // Live update from subagent writing to shared document
+                  setPendingCanvas((prev) =>
+                    prev ? { ...prev, content: parsed.content } : null
+                  );
+                  setCanvas((prev) => ({
+                    ...prev,
+                    content: parsed.content,
+                  }));
                 } else if (parsed.type === "canvas_done") {
                   setCanvas((prev) => ({ ...prev, isStreaming: false }));
                 } else if (parsed.type === "memory_update") {
                   // Update memory files when agent writes to them
                   updateMemory(parsed.path, parsed.content);
+                } else if (parsed.type === "todo_list_create") {
+                  // Create a new todo list
+                  const newTodoList = parsed.todoList as TodoList;
+                  setCurrentTodoList(newTodoList);
+                  // Also attach it to the current message
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessage.id
+                        ? { ...m, todoList: newTodoList }
+                        : m
+                    )
+                  );
+                } else if (parsed.type === "todo_update") {
+                  // Update a specific todo item
+                  setCurrentTodoList((prev) => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      items: prev.items.map((item) =>
+                        item.id === parsed.item_id
+                          ? { ...item, status: parsed.status as TodoItem["status"] }
+                          : item
+                      ),
+                    };
+                  });
+                  // Also update in the message
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessage.id && m.todoList
+                        ? {
+                            ...m,
+                            todoList: {
+                              ...m.todoList,
+                              items: m.todoList.items.map((item) =>
+                                item.id === parsed.item_id
+                                  ? { ...item, status: parsed.status as TodoItem["status"] }
+                                  : item
+                              ),
+                            },
+                          }
+                        : m
+                    )
+                  );
                 } else if (parsed.type === "plan_create") {
                   // Create a new plan and open the sidebar
                   setCurrentPlan(parsed.plan as Plan);
@@ -667,6 +736,18 @@ export default function Home() {
                       {/* Assistant messages flow directly in chat */}
                       {message.role === "assistant" && (
                         <>
+                          {/* Todo list - show inline in chat */}
+                          {message.todoList && (
+                            <TodoListComponent
+                              todoList={isLastAssistant && currentTodoList ? currentTodoList : message.todoList}
+                            />
+                          )}
+
+                          {/* Show current todo list for streaming message if it exists */}
+                          {isLastAssistant && isLoading && currentTodoList && !message.todoList && (
+                            <TodoListComponent todoList={currentTodoList} />
+                          )}
+
                           {/* Tool timeline for completed messages */}
                           {showToolTimeline && (
                             <div style={styles.toolTimelineContainer}>
