@@ -30,6 +30,10 @@ interface CanvasState {
   isStreaming: boolean;
 }
 
+interface MemoryFiles {
+  [path: string]: string;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -46,9 +50,29 @@ export default function Home() {
   const [activitySidebarOpen, setActivitySidebarOpen] = useState(false);
   const [splitRatio, setSplitRatio] = useState(0.34); // Chat takes 34%, canvas takes 66%
   const [isDragging, setIsDragging] = useState(false);
+  const [memoryFiles, setMemoryFiles] = useState<MemoryFiles>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { config } = usePromptConfig();
+
+  // Load memory from localStorage on mount
+  useEffect(() => {
+    const savedMemory = localStorage.getItem("deepagents-memory");
+    if (savedMemory) {
+      try {
+        setMemoryFiles(JSON.parse(savedMemory));
+      } catch {
+        // Invalid JSON, start fresh
+      }
+    }
+  }, []);
+
+  // Save memory to localStorage when it changes
+  useEffect(() => {
+    if (Object.keys(memoryFiles).length > 0) {
+      localStorage.setItem("deepagents-memory", JSON.stringify(memoryFiles));
+    }
+  }, [memoryFiles]);
 
   // Pending canvas data while streaming (before attaching to message)
   const [pendingCanvas, setPendingCanvas] = useState<CanvasData | null>(null);
@@ -141,6 +165,7 @@ export default function Home() {
             content: m.content,
           })),
           canvasContent: canvas.content,
+          memoryFiles: memoryFiles,
           promptConfig: {
             systemPrompt: config.mainAgentSystemPrompt,
             canvasToolDescription: config.canvasToolDescription,
@@ -286,6 +311,12 @@ export default function Home() {
                   }));
                 } else if (parsed.type === "canvas_done") {
                   setCanvas((prev) => ({ ...prev, isStreaming: false }));
+                } else if (parsed.type === "memory_update") {
+                  // Update memory files when agent writes to them
+                  setMemoryFiles((prev) => ({
+                    ...prev,
+                    [parsed.path]: parsed.content,
+                  }));
                 } else if (parsed.content) {
                   // Regular chat content
                   setMessages((prev) =>

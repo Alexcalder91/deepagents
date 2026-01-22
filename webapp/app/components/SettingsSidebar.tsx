@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { usePromptConfig, PromptConfig } from "../contexts/PromptConfigContext";
 
-type SettingsPage = "main" | "prompts";
+type SettingsPage = "main" | "prompts" | "memory";
 
 interface PromptCategory {
   title: string;
@@ -133,15 +133,73 @@ const PROMPT_CATEGORIES: PromptCategory[] = [
   },
 ];
 
+interface MemoryFiles {
+  [path: string]: string;
+}
+
 export default function SettingsSidebar() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [currentPage, setCurrentPage] = useState<SettingsPage>("main");
   const [selectedPrompt, setSelectedPrompt] = useState<keyof PromptConfig | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set(["Main Agent"]));
+  const [memoryFiles, setMemoryFiles] = useState<MemoryFiles>({});
   const sidebarRef = useRef<HTMLDivElement>(null);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const { config, updatePrompt, resetPrompt, hasChanges } = usePromptConfig();
+
+  // Load memory from localStorage
+  useEffect(() => {
+    const savedMemory = localStorage.getItem("deepagents-memory");
+    if (savedMemory) {
+      try {
+        setMemoryFiles(JSON.parse(savedMemory));
+      } catch {
+        // Invalid JSON, ignore
+      }
+    }
+
+    // Listen for storage changes (when memory is updated from chat)
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "deepagents-memory" && e.newValue) {
+        try {
+          setMemoryFiles(JSON.parse(e.newValue));
+        } catch {
+          // Invalid JSON
+        }
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  // Also poll for changes (since storage event doesn't fire in same tab)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const savedMemory = localStorage.getItem("deepagents-memory");
+      if (savedMemory) {
+        try {
+          const parsed = JSON.parse(savedMemory);
+          setMemoryFiles((prev) => {
+            if (JSON.stringify(prev) !== JSON.stringify(parsed)) {
+              return parsed;
+            }
+            return prev;
+          });
+        } catch {
+          // Ignore
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const clearMemory = () => {
+    localStorage.removeItem("deepagents-memory");
+    setMemoryFiles({});
+  };
 
   // Handle hover to expand
   const handleMouseEnter = () => {
@@ -282,6 +340,34 @@ export default function SettingsSidebar() {
                   <polyline points="9 18 15 12 9 6"></polyline>
                 </svg>
               </button>
+
+              <button
+                style={styles.menuItem}
+                className="settings-menu-item"
+                onClick={() => setCurrentPage("memory")}
+              >
+                <span style={styles.menuIcon}>🧠</span>
+                <div style={styles.menuText}>
+                  <span style={styles.menuLabel}>Agent Memory</span>
+                  <span style={styles.menuDescription}>
+                    View and manage stored memories
+                    {Object.keys(memoryFiles).length > 0 && (
+                      <span style={styles.memoryBadge}>{Object.keys(memoryFiles).length} file{Object.keys(memoryFiles).length !== 1 ? "s" : ""}</span>
+                    )}
+                  </span>
+                </div>
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  style={styles.menuArrow}
+                >
+                  <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+              </button>
             </div>
           </>
         )}
@@ -355,6 +441,77 @@ export default function SettingsSidebar() {
                   )}
                 </div>
               ))}
+            </div>
+          </>
+        )}
+
+        {currentPage === "memory" && !selectedPrompt && (
+          <>
+            <div style={styles.header}>
+              <button
+                style={styles.backButton}
+                className="settings-back-button"
+                onClick={() => setCurrentPage("main")}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+              </button>
+              <h2 style={styles.title}>Agent Memory</h2>
+              {Object.keys(memoryFiles).length > 0 && (
+                <button
+                  style={styles.clearMemoryButton}
+                  className="settings-reset-button"
+                  onClick={clearMemory}
+                  title="Clear all memory"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div style={styles.memoryContainer}>
+              {Object.keys(memoryFiles).length === 0 ? (
+                <div style={styles.memoryEmpty}>
+                  <span style={styles.memoryEmptyIcon}>🧠</span>
+                  <p style={styles.memoryEmptyText}>No memories stored yet</p>
+                  <p style={styles.memoryEmptyHint}>
+                    Ask the agent to remember something, or it will automatically save important information.
+                  </p>
+                </div>
+              ) : (
+                Object.entries(memoryFiles).map(([filePath, content]) => (
+                  <div key={filePath} style={styles.memoryFile}>
+                    <div style={styles.memoryFileHeader}>
+                      <span style={styles.memoryFileName}>{filePath}</span>
+                      <span style={styles.memoryFileSize}>
+                        {content.length} chars
+                      </span>
+                    </div>
+                    <div style={styles.memoryFileContent}>
+                      <pre style={styles.memoryPre}>{content}</pre>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </>
         )}
@@ -703,5 +860,98 @@ const styles: { [key: string]: React.CSSProperties } = {
     height: "6px",
     borderRadius: "50%",
     background: "#fbbf24",
+  },
+  memoryBadge: {
+    marginLeft: "0.5rem",
+    padding: "0.1rem 0.4rem",
+    background: "rgba(99, 102, 241, 0.15)",
+    color: "var(--accent)",
+    borderRadius: "4px",
+    fontSize: "0.6rem",
+    fontWeight: 500,
+  },
+  clearMemoryButton: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    padding: "0.35rem 0.6rem",
+    background: "transparent",
+    border: "1px solid var(--border)",
+    borderRadius: "6px",
+    color: "var(--muted)",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+    transition: "all 0.2s",
+    marginLeft: "auto",
+  },
+  memoryContainer: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "0.75rem",
+  },
+  memoryEmpty: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "2rem",
+    textAlign: "center",
+  },
+  memoryEmptyIcon: {
+    fontSize: "2rem",
+    marginBottom: "0.75rem",
+    opacity: 0.5,
+  },
+  memoryEmptyText: {
+    color: "var(--muted)",
+    fontSize: "0.875rem",
+    margin: 0,
+    marginBottom: "0.5rem",
+  },
+  memoryEmptyHint: {
+    color: "var(--muted)",
+    fontSize: "0.75rem",
+    margin: 0,
+    opacity: 0.7,
+    maxWidth: "200px",
+  },
+  memoryFile: {
+    background: "rgba(0, 0, 0, 0.3)",
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    marginBottom: "0.75rem",
+    overflow: "hidden",
+  },
+  memoryFileHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0.5rem 0.75rem",
+    background: "rgba(255, 255, 255, 0.02)",
+    borderBottom: "1px solid var(--border)",
+  },
+  memoryFileName: {
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    color: "var(--accent)",
+    fontFamily: "monospace",
+  },
+  memoryFileSize: {
+    fontSize: "0.65rem",
+    color: "var(--muted)",
+  },
+  memoryFileContent: {
+    maxHeight: "300px",
+    overflowY: "auto",
+    padding: "0.75rem",
+  },
+  memoryPre: {
+    margin: 0,
+    fontSize: "0.7rem",
+    fontFamily: "monospace",
+    color: "var(--foreground)",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    lineHeight: 1.5,
   },
 };
