@@ -192,6 +192,7 @@ export async function POST(req: Request) {
                 type: "tool_step_complete",
                 id: stepId,
                 tool: "create_canvas",
+                output: `Created "${input.title}" (${input.content.length} characters)`,
               });
               controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
 

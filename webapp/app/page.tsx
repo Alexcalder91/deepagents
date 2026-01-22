@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import Canvas from "./components/Canvas";
 import ToolTimeline, { ToolStep } from "./components/ToolTimeline";
+import ToolActivitySidebar, { ToolActivity } from "./components/ToolActivitySidebar";
 
 interface Message {
   id: string;
@@ -30,6 +31,8 @@ export default function Home() {
     isStreaming: false,
   });
   const [currentToolSteps, setCurrentToolSteps] = useState<ToolStep[]>([]);
+  const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
+  const [activitySidebarOpen, setActivitySidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -54,6 +57,8 @@ export default function Home() {
     setInput("");
     setIsLoading(true);
     setCurrentToolSteps([]);
+    setToolActivities([]);
+    setActivitySidebarOpen(true); // Auto-open sidebar when work starts
 
     try {
       const response = await fetch("/api/chat", {
@@ -130,7 +135,18 @@ export default function Home() {
                         : m
                     )
                   );
+                  // Add to activity sidebar
+                  const newActivity: ToolActivity = {
+                    id: parsed.id,
+                    tool: parsed.tool,
+                    reasoning: parsed.reasoning,
+                    status: parsed.status,
+                    timestamp: Date.now(),
+                    input: parsed.input,
+                  };
+                  setToolActivities((prev) => [...prev, newActivity]);
                 } else if (parsed.type === "tool_step_complete") {
+                  const completeTimestamp = Date.now();
                   // Mark the step as complete
                   setCurrentToolSteps((prev) =>
                     prev.map((step) =>
@@ -151,6 +167,19 @@ export default function Home() {
                             ),
                           }
                         : m
+                    )
+                  );
+                  // Update activity sidebar with completion
+                  setToolActivities((prev) =>
+                    prev.map((activity) =>
+                      activity.id === parsed.id || activity.tool === parsed.tool
+                        ? {
+                            ...activity,
+                            status: "complete" as const,
+                            output: parsed.output,
+                            duration: completeTimestamp - activity.timestamp,
+                          }
+                        : activity
                     )
                   );
                 }
@@ -215,20 +244,57 @@ export default function Home() {
     setCanvas((prev) => ({ ...prev, title }));
   };
 
+  // Calculate main content width based on what panels are open
+  const getMainWidth = () => {
+    if (canvas.isOpen && activitySidebarOpen) return "calc(100% - 380px - 50%)";
+    if (canvas.isOpen) return "50%";
+    if (activitySidebarOpen) return "calc(100% - 380px)";
+    return "100%";
+  };
+
   return (
     <div style={styles.pageContainer}>
       <div
         style={{
           ...styles.container,
-          width: canvas.isOpen ? "50%" : "100%",
+          width: getMainWidth(),
         }}
       >
         <header style={styles.header}>
-          <div style={styles.logo}>
-            <span style={styles.logoIcon}>🤖</span>
-            <h1 style={styles.title}>DeepAgents</h1>
+          <div style={styles.headerContent}>
+            <div style={styles.logo}>
+              <span style={styles.logoIcon}>🤖</span>
+              <h1 style={styles.title}>DeepAgents</h1>
+            </div>
+            <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
           </div>
-          <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
+          {/* Activity toggle button */}
+          <button
+            onClick={() => setActivitySidebarOpen(!activitySidebarOpen)}
+            style={{
+              ...styles.activityToggle,
+              ...(toolActivities.some((a) => a.status === "running")
+                ? styles.activityToggleActive
+                : {}),
+            }}
+            title={activitySidebarOpen ? "Hide activity" : "Show activity"}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+            {toolActivities.length > 0 && (
+              <span style={styles.activityBadge}>{toolActivities.length}</span>
+            )}
+          </button>
         </header>
 
         <main style={styles.main}>
@@ -356,7 +422,12 @@ export default function Home() {
       </div>
 
       {canvas.isOpen && (
-        <div style={styles.canvasWrapper}>
+        <div
+          style={{
+            ...styles.canvasWrapper,
+            right: activitySidebarOpen ? "380px" : "0",
+          }}
+        >
           <Canvas
             content={canvas.content}
             title={canvas.title}
@@ -369,6 +440,13 @@ export default function Home() {
         </div>
       )}
 
+      {/* Activity Sidebar */}
+      <ToolActivitySidebar
+        activities={toolActivities}
+        isOpen={activitySidebarOpen}
+        onClose={() => setActivitySidebarOpen(false)}
+      />
+
       <style jsx global>{`
         @keyframes blink {
           0%,
@@ -378,6 +456,58 @@ export default function Home() {
           50% {
             opacity: 1;
           }
+        }
+        @keyframes spin {
+          0% {
+            transform: rotate(0deg);
+          }
+          100% {
+            transform: rotate(360deg);
+          }
+        }
+        @keyframes pulse-border {
+          0%,
+          100% {
+            box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4);
+          }
+          50% {
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+          }
+        }
+        @keyframes progress-slide {
+          0% {
+            transform: translateX(-100%);
+          }
+          100% {
+            transform: translateX(400%);
+          }
+        }
+        @keyframes pulse-glow {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.5;
+          }
+        }
+        .spinner {
+          animation: spin 0.8s linear infinite;
+        }
+        .node-pulse {
+          animation: pulse-border 2s infinite;
+        }
+        .progress-animate {
+          animation: progress-slide 1.5s ease-in-out infinite;
+        }
+        .pulse-dot {
+          animation: pulse-glow 1.5s ease-in-out infinite;
+        }
+        .running-text {
+          animation: pulse-glow 1.5s ease-in-out infinite;
+        }
+        .activity-running {
+          animation: none;
         }
       `}</style>
     </div>
@@ -398,19 +528,53 @@ const styles: { [key: string]: React.CSSProperties } = {
   canvasWrapper: {
     width: "50%",
     height: "100vh",
-    position: "sticky",
+    position: "fixed",
     top: 0,
+    transition: "right 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
   },
   header: {
     padding: "1rem 2rem",
     borderBottom: "1px solid var(--border)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  headerContent: {
     textAlign: "center",
+    flex: 1,
   },
   logo: {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     gap: "0.5rem",
+  },
+  activityToggle: {
+    background: "var(--card)",
+    border: "1px solid var(--border)",
+    borderRadius: "8px",
+    color: "var(--muted)",
+    cursor: "pointer",
+    padding: "0.5rem 0.75rem",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    transition: "all 0.2s",
+    position: "relative" as const,
+  },
+  activityToggleActive: {
+    borderColor: "var(--accent)",
+    color: "var(--accent)",
+  },
+  activityBadge: {
+    fontSize: "0.65rem",
+    fontWeight: 600,
+    background: "var(--accent)",
+    color: "white",
+    borderRadius: "10px",
+    padding: "0.1rem 0.4rem",
+    minWidth: "18px",
+    textAlign: "center" as const,
   },
   logoIcon: {
     fontSize: "1.5rem",
