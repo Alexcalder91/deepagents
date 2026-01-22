@@ -54,25 +54,32 @@ export default function Home() {
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const prevChatIdRef = useRef<string | null>(null);
   const { config } = usePromptConfig();
   const { currentChat, currentChatId, updateCurrentChat, setStreamingChatId } = useChatHistory();
   const { memoryFiles, updateMemory } = useMemory();
 
-  // Sync messages with chat history
+  // Sync messages with chat history - only reset canvas when switching chats
   useEffect(() => {
-    if (currentChat) {
-      setMessages(currentChat.messages as Message[]);
-      setToolActivities([]);
-      setCanvas({
-        isOpen: false,
-        messageId: null,
-        title: "",
-        content: "",
-        isStreaming: false,
-      });
-    } else {
-      setMessages([]);
-      setToolActivities([]);
+    const chatIdChanged = prevChatIdRef.current !== currentChatId;
+    prevChatIdRef.current = currentChatId;
+
+    if (chatIdChanged) {
+      // Only reset canvas and activities when switching to a different chat
+      if (currentChat) {
+        setMessages(currentChat.messages as Message[]);
+        setToolActivities([]);
+        setCanvas({
+          isOpen: false,
+          messageId: null,
+          title: "",
+          content: "",
+          isStreaming: false,
+        });
+      } else {
+        setMessages([]);
+        setToolActivities([]);
+      }
     }
   }, [currentChatId, currentChat]);
 
