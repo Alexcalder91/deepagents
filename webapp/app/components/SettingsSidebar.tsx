@@ -146,7 +146,7 @@ export default function SettingsSidebar() {
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const { config, updatePrompt, resetPrompt, hasChanges } = usePromptConfig();
-  const { chats, currentChatId, createNewChat, selectChat, deleteChat, renameChat } = useChatHistory();
+  const { chats, currentChatId, createNewChat, selectChat, deleteChat, renameChat, streamingChatId } = useChatHistory();
   const { memoryFiles, clearAllMemories } = useMemory();
 
   const clearMemory = async () => {
@@ -578,6 +578,7 @@ export default function SettingsSidebar() {
                     style={{
                       ...styles.chatHistoryItem,
                       ...(chat.id === currentChatId ? styles.chatHistoryItemActive : {}),
+                      ...(chat.id === streamingChatId ? styles.chatHistoryItemStreaming : {}),
                     }}
                     className="chat-history-item"
                   >
@@ -613,9 +614,20 @@ export default function SettingsSidebar() {
                           setIsExpanded(false);
                         }}
                       >
-                        <span style={styles.chatHistoryTitle}>{chat.title}</span>
+                        <div style={styles.chatTitleRow}>
+                          <span style={styles.chatHistoryTitle}>{chat.title}</span>
+                          {chat.id === streamingChatId && (
+                            <span style={styles.streamingIndicator} title="Running">
+                              <span style={styles.streamingDot}></span>
+                            </span>
+                          )}
+                        </div>
                         <span style={styles.chatHistoryMeta}>
-                          {chat.messages.length} message{chat.messages.length !== 1 ? "s" : ""}
+                          {chat.id === streamingChatId ? (
+                            <span style={styles.streamingText}>Running...</span>
+                          ) : (
+                            `${chat.messages.length} message${chat.messages.length !== 1 ? "s" : ""}`
+                          )}
                         </span>
                       </button>
                     )}
@@ -1135,6 +1147,31 @@ const styles: { [key: string]: React.CSSProperties } = {
   chatHistoryItemActive: {
     background: "rgba(99, 102, 241, 0.15)",
   },
+  chatHistoryItemStreaming: {
+    background: "rgba(52, 211, 153, 0.1)",
+    borderLeft: "2px solid #34d399",
+  },
+  chatTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    width: "100%",
+  },
+  streamingIndicator: {
+    display: "flex",
+    alignItems: "center",
+    flexShrink: 0,
+  },
+  streamingDot: {
+    width: "6px",
+    height: "6px",
+    borderRadius: "50%",
+    background: "#34d399",
+    animation: "pulse-glow 1.5s ease-in-out infinite",
+  },
+  streamingText: {
+    color: "#34d399",
+  },
   chatHistoryButton: {
     flex: 1,
     display: "flex",
@@ -1155,7 +1192,8 @@ const styles: { [key: string]: React.CSSProperties } = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-    width: "100%",
+    flex: 1,
+    minWidth: 0,
   },
   chatHistoryMeta: {
     fontSize: "0.65rem",

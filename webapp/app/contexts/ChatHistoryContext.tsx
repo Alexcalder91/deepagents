@@ -32,11 +32,13 @@ interface ChatHistoryContextType {
   currentChatId: string | null;
   currentChat: Chat | null;
   isLoading: boolean;
+  streamingChatId: string | null;
   createNewChat: () => Promise<string>;
   selectChat: (chatId: string) => void;
   updateCurrentChat: (messages: ChatMessage[]) => void;
   deleteChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
+  setStreamingChatId: (chatId: string | null) => void;
 }
 
 const ChatHistoryContext = createContext<ChatHistoryContextType | null>(null);
@@ -59,6 +61,7 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [streamingChatId, setStreamingChatId] = useState<string | null>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pendingSaveRef = useRef<{ chatId: string; messages: ChatMessage[]; title: string } | null>(null);
 
@@ -257,11 +260,13 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
         currentChatId,
         currentChat,
         isLoading,
+        streamingChatId,
         createNewChat,
         selectChat,
         updateCurrentChat,
         deleteChat,
         renameChat,
+        setStreamingChatId,
       }}
     >
       {children}

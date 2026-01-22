@@ -55,7 +55,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { config } = usePromptConfig();
-  const { currentChat, currentChatId, updateCurrentChat } = useChatHistory();
+  const { currentChat, currentChatId, updateCurrentChat, setStreamingChatId } = useChatHistory();
   const { memoryFiles, updateMemory } = useMemory();
 
   // Sync messages with chat history
@@ -172,6 +172,11 @@ export default function Home() {
     setCurrentToolSteps([]);
     setToolActivities([]);
     setActivitySidebarOpen(true); // Auto-open sidebar when work starts
+
+    // Mark this chat as streaming
+    if (currentChatId) {
+      setStreamingChatId(currentChatId);
+    }
 
     try {
       const response = await fetch("/api/chat", {
@@ -404,6 +409,7 @@ export default function Home() {
       setIsLoading(false);
       setCurrentToolSteps([]);
       setCanvas((prev) => ({ ...prev, isStreaming: false }));
+      setStreamingChatId(null); // Clear streaming state
     }
   };
 
