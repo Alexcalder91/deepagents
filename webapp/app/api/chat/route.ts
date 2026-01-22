@@ -12,33 +12,44 @@ const anthropic = new Anthropic({
 });
 
 // Memory system prompt - based on DeepAgents framework
-const MEMORY_SYSTEM_PROMPT = `## Memory System
+const MEMORY_SYSTEM_PROMPT = `## Memory System (Ambient Memory)
 
-You have access to a persistent memory file that stores information across conversations. Use this to remember:
-- User preferences and context
-- Important facts about the user
-- Ongoing projects or tasks
-- Decisions made in previous conversations
-- Anything the user asks you to remember
+You have access to a persistent memory file that stores information across conversations. You should PROACTIVELY and AUTOMATICALLY update memory whenever you learn something about the user - don't wait for them to ask.
 
-### When to update memory:
+### IMPORTANT: Ambient Memory Behavior
+When the user shares ANY personal information, preferences, or context about themselves, you MUST automatically save it to memory using the edit_file tool. Do this silently alongside your response - don't ask permission.
+
+Examples of information to automatically save:
+- "I'm in 12th grade" → Save: User is in 12th grade (high school senior)
+- "I work at Google" → Save: User works at Google
+- "I prefer Python over JavaScript" → Save: User prefers Python over JavaScript
+- "My name is Alex" → Save: User's name is Alex
+- "I'm working on a startup" → Save: User is working on a startup
+- "I have a deadline Friday" → Save: User has a deadline on Friday
+- "I'm learning React" → Save: User is learning React
+- "I like ducks" → Save: User likes ducks
+
+### When to update memory (ALWAYS do this automatically):
+- User mentions their name, age, grade level, or occupation
+- User shares preferences (languages, tools, styles, interests)
+- User mentions what they're working on or learning
+- User shares deadlines, goals, or constraints
+- User reveals hobbies, interests, or things they like/dislike
+- User provides any context that would be useful to remember
 - User explicitly asks you to remember something
-- You learn important context about the user (name, preferences, goals)
-- A significant decision is made that should be recalled later
-- User shares project details, deadlines, or requirements
-- Any information that would be valuable in future conversations
 
 ### Memory file format:
 The memory file (AGENTS.md) uses markdown with sections:
-- **User Context**: Name, preferences, communication style
+- **User Profile**: Name, age/grade, occupation, location
+- **Preferences**: Likes, dislikes, preferred tools/languages
+- **Current Focus**: What they're working on, learning, or interested in
 - **Projects**: Ongoing work, goals, deadlines
-- **Decisions**: Important choices made
-- **Notes**: Miscellaneous remembered information
+- **Notes**: Other useful information
 
-To update memory, use the edit_file tool with path "AGENTS.md".
-To read current memory, use the read_file tool with path "AGENTS.md".
+### How to update memory:
+Use the edit_file tool with path "AGENTS.md". If the file doesn't exist, create it with initial structure. When adding new information, append to the appropriate section or update existing entries.
 
-Always check memory at the start of conversations when relevant context might exist.`;
+CRITICAL: Do this automatically in the background. When you detect user information, include an edit_file tool call alongside your response. Don't mention that you're saving to memory unless the user asks.`;
 
 // Default system prompt - can be overridden by client config
 const DEFAULT_SYSTEM_PROMPT = `You are DeepAgent, an AI assistant powered by Claude and the DeepAgents framework.
@@ -354,6 +365,91 @@ function createTools(config: ExtendedPromptConfig = {}): Anthropic.Tool[] {
           },
         },
         required: ["reasoning", "description", "prompt"],
+      },
+    },
+    {
+      name: "create_plan",
+      description: `Create a structured plan for completing a complex task. Use this when the user asks you to plan something, break down a task, or when you need to coordinate multiple steps or subagents. The plan will be displayed in the UI as a checklist that tracks progress.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of why you're creating this plan.",
+          },
+          title: {
+            type: "string",
+            description: "A concise title for the plan (e.g., 'Research Duck Species', 'Build Landing Page').",
+          },
+          goal: {
+            type: "string",
+            description: "The overall goal or objective this plan aims to achieve.",
+          },
+          steps: {
+            type: "array",
+            description: "Array of plan steps to execute.",
+            items: {
+              type: "object",
+              properties: {
+                id: {
+                  type: "string",
+                  description: "Unique identifier for this step (e.g., 'step-1', 'research-mallard').",
+                },
+                title: {
+                  type: "string",
+                  description: "Short title for this step.",
+                },
+                description: {
+                  type: "string",
+                  description: "Detailed description of what this step involves.",
+                },
+                type: {
+                  type: "string",
+                  enum: ["task", "subagent", "manual", "checkpoint"],
+                  description: "Type of step: 'task' (you'll do it), 'subagent' (delegate to subagent), 'manual' (user action needed), 'checkpoint' (review point).",
+                },
+                assignee: {
+                  type: "string",
+                  description: "For subagent steps, a descriptive name for the subagent (e.g., 'Research Agent', 'Writer Agent').",
+                },
+                dependencies: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Array of step IDs that must complete before this step can start.",
+                },
+              },
+              required: ["id", "title", "description", "type"],
+            },
+          },
+        },
+        required: ["reasoning", "title", "goal", "steps"],
+      },
+    },
+    {
+      name: "update_plan",
+      description: `Update the status of a plan step. Use this to mark steps as in_progress, completed, or failed as you work through the plan.`,
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          reasoning: {
+            type: "string",
+            description: "Brief explanation of this status update.",
+          },
+          step_id: {
+            type: "string",
+            description: "The ID of the step to update.",
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed", "failed", "skipped"],
+            description: "New status for the step.",
+          },
+          output: {
+            type: "string",
+            description: "Optional output or result from completing this step.",
+          },
+        },
+        required: ["reasoning", "step_id", "status"],
       },
     },
   ];
@@ -674,7 +770,7 @@ async function executeTool(
   updatedMemoryFiles: MemoryFiles,
   controller: ReadableStreamDefaultController,
   encoder: TextEncoder
-): Promise<{ toolId: string; toolName: string; output: string; memoryUpdate?: { path: string; content: string } }> {
+): Promise<{ toolId: string; toolName: string; output: string; stepId: string; memoryUpdate?: { path: string; content: string } }> {
   const stepId = `step_${Date.now()}_${toolName}_${toolId}`;
 
   // Send tool step start with reasoning
@@ -805,7 +901,7 @@ async function executeTool(
   });
   controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
 
-  return { toolId, toolName, output, memoryUpdate };
+  return { toolId, toolName, output, stepId, memoryUpdate };
 }
 
 export async function POST(req: Request) {
@@ -885,6 +981,7 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
 
           // Agentic loop - continue until we get a response without tool calls
           let continueLoop = true;
+          let isFirstIteration = true;
           while (continueLoop) {
             // API call with tools
             const response = await anthropic.messages.create({
@@ -896,7 +993,7 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
             });
 
             // Mark thinking as complete (only on first iteration)
-            if (thinkingStepId) {
+            if (isFirstIteration && thinkingStepId) {
               const thinkingComplete = JSON.stringify({
                 type: "tool_step_complete",
                 id: thinkingStepId,
@@ -904,6 +1001,7 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
                 output: `Generated ${response.content.length} content block(s)`,
               });
               controller.enqueue(encoder.encode(`data: ${thinkingComplete}\n\n`));
+              isFirstIteration = false;
             }
 
             // Separate text blocks and tool use blocks
@@ -930,7 +1028,7 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
               const taskCalls = toolUseBlocks.filter((b) => b.type === "tool_use" && b.name === "task");
               const otherCalls = toolUseBlocks.filter((b) => b.type === "tool_use" && b.name !== "task");
 
-              const toolResults: { toolId: string; toolName: string; output: string }[] = [];
+              const toolResults: { toolId: string; toolName: string; output: string; stepId: string }[] = [];
 
               // Execute non-task tools sequentially (they may have side effects/dependencies)
               for (const block of otherCalls) {
@@ -984,7 +1082,7 @@ Example: If asked to write reports about 5 different topics, make 5 separate tas
                       encoder
                     );
                   }
-                  return Promise.resolve({ toolId: "", toolName: "", output: "" });
+                  return Promise.resolve({ toolId: "", toolName: "", output: "", stepId: "" });
                 });
 
                 const taskResults = await Promise.all(taskPromises);

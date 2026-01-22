@@ -1,0 +1,64 @@
+// Prisma schema for DeepAgents webapp
+// Database: singularity-db
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Chat model - represents a conversation
+model Chat {
+  id        String    @id @default(cuid())
+  title     String    @default("New Chat")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+
+  @@map("chats")
+}
+
+// Message model - represents individual messages in a chat
+model Message {
+  id        String   @id @default(cuid())
+  role      String   // "user" or "assistant"
+  content   String   @db.Text
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  // Tool steps stored as JSON
+  toolSteps Json?
+
+  // Canvas data stored as JSON
+  canvas    Json?
+
+  @@index([chatId])
+  @@map("messages")
+}
+
+// Memory model - represents memory files
+model Memory {
+  id        String   @id @default(cuid())
+  name      String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("memories")
+}
+
+// PromptConfig model - represents system prompt configuration
+model PromptConfig {
+  id              String   @id @default(cuid())
+  systemPrompt    String   @db.Text
+  customInstructs String   @db.Text @default("")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("prompt_configs")
+}
