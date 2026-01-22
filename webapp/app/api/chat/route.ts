@@ -665,6 +665,149 @@ interface MemoryFiles {
   [path: string]: string;
 }
 
+// Helper to execute a single tool and return result
+async function executeTool(
+  toolName: string,
+  toolId: string,
+  input: Record<string, unknown>,
+  config: ExtendedPromptConfig,
+  updatedMemoryFiles: MemoryFiles,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder
+): Promise<{ toolId: string; toolName: string; output: string; memoryUpdate?: { path: string; content: string } }> {
+  const stepId = `step_${Date.now()}_${toolName}_${toolId}`;
+
+  // Send tool step start with reasoning
+  const toolStep = JSON.stringify({
+    type: "tool_step",
+    id: stepId,
+    tool: toolName,
+    reasoning: getToolReasoning(toolName, input),
+    status: "running",
+    input: input,
+  });
+  controller.enqueue(encoder.encode(`data: ${toolStep}\n\n`));
+
+  let output = "";
+  let memoryUpdate: { path: string; content: string } | undefined;
+
+  // Handle each tool type
+  switch (toolName) {
+    case "create_canvas": {
+      const canvasInput = input as { title: string; content: string };
+      // Signal canvas creation
+      const createData = JSON.stringify({
+        type: "canvas_create",
+        title: canvasInput.title,
+      });
+      controller.enqueue(encoder.encode(`data: ${createData}\n\n`));
+
+      // Stream canvas content in chunks for smooth animation
+      const content = canvasInput.content;
+      const chunkSize = 20;
+      for (let i = 0; i < content.length; i += chunkSize) {
+        const chunk = content.slice(i, i + chunkSize);
+        const contentData = JSON.stringify({
+          type: "canvas_content",
+          content: chunk,
+        });
+        controller.enqueue(encoder.encode(`data: ${contentData}\n\n`));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // Signal canvas completion
+      const doneData = JSON.stringify({ type: "canvas_done" });
+      controller.enqueue(encoder.encode(`data: ${doneData}\n\n`));
+
+      output = `Created "${canvasInput.title}" (${canvasInput.content.length} characters)`;
+
+      // Send a chat message about the canvas
+      const chatData = JSON.stringify({
+        content: `I've created "${canvasInput.title}" in the canvas. You can view and edit it on the right side of the screen.`,
+      });
+      controller.enqueue(encoder.encode(`data: ${chatData}\n\n`));
+      break;
+    }
+
+    case "ls": {
+      const result = await executeFilesystemOp("ls", input, updatedMemoryFiles);
+      output = result.result;
+      memoryUpdate = result.memoryUpdate;
+      break;
+    }
+
+    case "read_file": {
+      const result = await executeFilesystemOp("read", input, updatedMemoryFiles);
+      output = result.result;
+      break;
+    }
+
+    case "write_file": {
+      const result = await executeFilesystemOp("write", input, updatedMemoryFiles);
+      output = result.result;
+      memoryUpdate = result.memoryUpdate;
+      break;
+    }
+
+    case "edit_file": {
+      const result = await executeFilesystemOp("edit", input, updatedMemoryFiles);
+      output = result.result;
+      memoryUpdate = result.memoryUpdate;
+      break;
+    }
+
+    case "glob": {
+      const pattern = input.pattern as string;
+      const basePath = input.path as string | undefined;
+      output = await executeGlob(pattern, basePath);
+      break;
+    }
+
+    case "grep": {
+      const pattern = input.pattern as string;
+      const searchPath = input.path as string | undefined;
+      const globPattern = input.glob_pattern as string | undefined;
+      const outputMode = (input.output_mode as string) || "files_with_matches";
+      output = await executeGrep(pattern, searchPath, globPattern, outputMode);
+      break;
+    }
+
+    case "execute": {
+      const command = input.command as string;
+      const cwd = input.cwd as string | undefined;
+      const timeout = (input.timeout as number) || 30000;
+      const result = await executeCommand(command, cwd, timeout);
+      output = `Exit code: ${result.exitCode}\n`;
+      if (result.stdout) output += `stdout:\n${result.stdout}\n`;
+      if (result.stderr) output += `stderr:\n${result.stderr}`;
+      break;
+    }
+
+    case "task": {
+      const description = input.description as string;
+      const prompt = input.prompt as string;
+      const subagentType = (input.subagent_type as string) || "general-purpose";
+      const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
+      output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt);
+      break;
+    }
+
+    default:
+      output = `Unknown tool: ${toolName}`;
+  }
+
+  // Mark tool step as complete
+  const toolComplete = JSON.stringify({
+    type: "tool_step_complete",
+    id: stepId,
+    tool: toolName,
+    output: output.length > 500 ? output.slice(0, 500) + "..." : output,
+  });
+  controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
+
+  return { toolId, toolName, output, memoryUpdate };
+}
+
 export async function POST(req: Request) {
   try {
     const { messages, canvasContent, promptConfig, memoryFiles } = await req.json();
@@ -706,6 +849,12 @@ export async function POST(req: Request) {
       systemPrompt += `\n\n## Current Memory\nNo memory file exists yet. Create one using edit_file with path "AGENTS.md" when you need to remember information.`;
     }
 
+    // Add instruction about parallel subagents
+    systemPrompt += `\n\n## Subagent Usage
+When you need to launch multiple subagents, call the task tool multiple times in the SAME response. They will be executed in parallel and their results will be collected for you to synthesize.
+
+Example: If asked to write reports about 5 different topics, make 5 separate task tool calls in your response, one for each topic. Do NOT make them sequentially.`;
+
     const tools = createTools(config);
     if (canvasContent) {
       systemPrompt += `\n\n## Current Canvas Content\nThe user has a canvas open with the following content:\n\`\`\`\n${canvasContent}\n\`\`\`\nYou can reference or modify this content if the user asks.`;
@@ -728,186 +877,144 @@ export async function POST(req: Request) {
           });
           controller.enqueue(encoder.encode(`data: ${thinkingStep}\n\n`));
 
-          // Initial API call with tools
-          const response = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 8192,
-            system: systemPrompt,
-            tools: tools,
-            messages: messages.map((m: { role: string; content: string }) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          });
+          // Build conversation history for the API
+          let conversationMessages = messages.map((m: { role: string; content: string }) => ({
+            role: m.role,
+            content: m.content,
+          }));
 
-          // Mark thinking as complete
-          const thinkingComplete = JSON.stringify({
-            type: "tool_step_complete",
-            id: thinkingStepId,
-            tool: "thinking",
-            output: `Generated ${response.content.length} content block(s)`,
-          });
-          controller.enqueue(encoder.encode(`data: ${thinkingComplete}\n\n`));
+          // Agentic loop - continue until we get a response without tool calls
+          let continueLoop = true;
+          while (continueLoop) {
+            // API call with tools
+            const response = await anthropic.messages.create({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 8192,
+              system: systemPrompt,
+              tools: tools,
+              messages: conversationMessages,
+            });
 
-          // Process the response
-          for (const block of response.content) {
-            if (block.type === "text") {
-              // Stream text content in chunks for smooth animation
-              const text = block.text;
-              const chunkSize = 5; // Characters per chunk for chat text
-              for (let i = 0; i < text.length; i += chunkSize) {
-                const chunk = text.slice(i, i + chunkSize);
-                const data = JSON.stringify({ content: chunk });
-                controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-                // Small delay for streaming effect
-                await new Promise((resolve) => setTimeout(resolve, 5));
-              }
-            } else if (block.type === "tool_use") {
-              const toolName = block.name;
-              const input = block.input as Record<string, unknown>;
-              const stepId = `step_${Date.now()}_${toolName}`;
-
-              // Send tool step start with reasoning
-              const toolStep = JSON.stringify({
-                type: "tool_step",
-                id: stepId,
-                tool: toolName,
-                reasoning: getToolReasoning(toolName, input),
-                status: "running",
-                input: input,
-              });
-              controller.enqueue(encoder.encode(`data: ${toolStep}\n\n`));
-
-              let output = "";
-
-              // Handle each tool type
-              switch (toolName) {
-                case "create_canvas": {
-                  const canvasInput = input as { title: string; content: string };
-                  // Signal canvas creation
-                  const createData = JSON.stringify({
-                    type: "canvas_create",
-                    title: canvasInput.title,
-                  });
-                  controller.enqueue(encoder.encode(`data: ${createData}\n\n`));
-
-                  // Stream canvas content in chunks for smooth animation
-                  const content = canvasInput.content;
-                  const chunkSize = 20;
-                  for (let i = 0; i < content.length; i += chunkSize) {
-                    const chunk = content.slice(i, i + chunkSize);
-                    const contentData = JSON.stringify({
-                      type: "canvas_content",
-                      content: chunk,
-                    });
-                    controller.enqueue(encoder.encode(`data: ${contentData}\n\n`));
-                    await new Promise((resolve) => setTimeout(resolve, 10));
-                  }
-
-                  // Signal canvas completion
-                  const doneData = JSON.stringify({ type: "canvas_done" });
-                  controller.enqueue(encoder.encode(`data: ${doneData}\n\n`));
-
-                  output = `Created "${canvasInput.title}" (${canvasInput.content.length} characters)`;
-
-                  // Send a chat message about the canvas
-                  const chatData = JSON.stringify({
-                    content: `I've created "${canvasInput.title}" in the canvas. You can view and edit it on the right side of the screen.`,
-                  });
-                  controller.enqueue(encoder.encode(`data: ${chatData}\n\n`));
-                  break;
-                }
-
-                case "ls": {
-                  const result = await executeFilesystemOp("ls", input, updatedMemoryFiles);
-                  output = result.result;
-                  break;
-                }
-
-                case "read_file": {
-                  const result = await executeFilesystemOp("read", input, updatedMemoryFiles);
-                  output = result.result;
-                  break;
-                }
-
-                case "write_file": {
-                  const result = await executeFilesystemOp("write", input, updatedMemoryFiles);
-                  output = result.result;
-                  if (result.memoryUpdate) {
-                    updatedMemoryFiles[result.memoryUpdate.path] = result.memoryUpdate.content;
-                    const memoryUpdate = JSON.stringify({
-                      type: "memory_update",
-                      path: result.memoryUpdate.path,
-                      content: result.memoryUpdate.content,
-                    });
-                    controller.enqueue(encoder.encode(`data: ${memoryUpdate}\n\n`));
-                  }
-                  break;
-                }
-
-                case "edit_file": {
-                  const result = await executeFilesystemOp("edit", input, updatedMemoryFiles);
-                  output = result.result;
-                  if (result.memoryUpdate) {
-                    updatedMemoryFiles[result.memoryUpdate.path] = result.memoryUpdate.content;
-                    const memoryUpdate = JSON.stringify({
-                      type: "memory_update",
-                      path: result.memoryUpdate.path,
-                      content: result.memoryUpdate.content,
-                    });
-                    controller.enqueue(encoder.encode(`data: ${memoryUpdate}\n\n`));
-                  }
-                  break;
-                }
-
-                case "glob": {
-                  const pattern = input.pattern as string;
-                  const basePath = input.path as string | undefined;
-                  output = await executeGlob(pattern, basePath);
-                  break;
-                }
-
-                case "grep": {
-                  const pattern = input.pattern as string;
-                  const searchPath = input.path as string | undefined;
-                  const globPattern = input.glob_pattern as string | undefined;
-                  const outputMode = (input.output_mode as string) || "files_with_matches";
-                  output = await executeGrep(pattern, searchPath, globPattern, outputMode);
-                  break;
-                }
-
-                case "execute": {
-                  const command = input.command as string;
-                  const cwd = input.cwd as string | undefined;
-                  const timeout = (input.timeout as number) || 30000;
-                  const result = await executeCommand(command, cwd, timeout);
-                  output = `Exit code: ${result.exitCode}\n`;
-                  if (result.stdout) output += `stdout:\n${result.stdout}\n`;
-                  if (result.stderr) output += `stderr:\n${result.stderr}`;
-                  break;
-                }
-
-                case "task": {
-                  const description = input.description as string;
-                  const prompt = input.prompt as string;
-                  const subagentType = (input.subagent_type as string) || "general-purpose";
-                  const subagentSystemPrompt = config.defaultSubagentPrompt || "You are a helpful assistant.";
-                  output = await executeSubagentTask(description, prompt, subagentType, subagentSystemPrompt);
-                  break;
-                }
-
-                default:
-                  output = `Unknown tool: ${toolName}`;
-              }
-
-              // Mark tool step as complete
-              const toolComplete = JSON.stringify({
+            // Mark thinking as complete (only on first iteration)
+            if (thinkingStepId) {
+              const thinkingComplete = JSON.stringify({
                 type: "tool_step_complete",
-                id: stepId,
-                tool: toolName,
-                output: output.length > 500 ? output.slice(0, 500) + "..." : output,
+                id: thinkingStepId,
+                tool: "thinking",
+                output: `Generated ${response.content.length} content block(s)`,
               });
-              controller.enqueue(encoder.encode(`data: ${toolComplete}\n\n`));
+              controller.enqueue(encoder.encode(`data: ${thinkingComplete}\n\n`));
+            }
+
+            // Separate text blocks and tool use blocks
+            const textBlocks = response.content.filter((b) => b.type === "text");
+            const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
+
+            // Stream any text content
+            for (const block of textBlocks) {
+              if (block.type === "text") {
+                const text = block.text;
+                const chunkSize = 5;
+                for (let i = 0; i < text.length; i += chunkSize) {
+                  const chunk = text.slice(i, i + chunkSize);
+                  const data = JSON.stringify({ content: chunk });
+                  controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                }
+              }
+            }
+
+            // If there are tool calls, execute them
+            if (toolUseBlocks.length > 0) {
+              // Check if we have multiple subagent (task) calls - these should run in parallel
+              const taskCalls = toolUseBlocks.filter((b) => b.type === "tool_use" && b.name === "task");
+              const otherCalls = toolUseBlocks.filter((b) => b.type === "tool_use" && b.name !== "task");
+
+              const toolResults: { toolId: string; toolName: string; output: string }[] = [];
+
+              // Execute non-task tools sequentially (they may have side effects/dependencies)
+              for (const block of otherCalls) {
+                if (block.type === "tool_use") {
+                  const result = await executeTool(
+                    block.name,
+                    block.id,
+                    block.input as Record<string, unknown>,
+                    config,
+                    updatedMemoryFiles,
+                    controller,
+                    encoder
+                  );
+                  toolResults.push(result);
+
+                  // Handle memory updates
+                  if (result.memoryUpdate) {
+                    updatedMemoryFiles[result.memoryUpdate.path] = result.memoryUpdate.content;
+                    const memoryUpdate = JSON.stringify({
+                      type: "memory_update",
+                      path: result.memoryUpdate.path,
+                      content: result.memoryUpdate.content,
+                    });
+                    controller.enqueue(encoder.encode(`data: ${memoryUpdate}\n\n`));
+                  }
+                }
+              }
+
+              // Execute task (subagent) calls in parallel
+              if (taskCalls.length > 0) {
+                // Notify that we're running subagents in parallel
+                if (taskCalls.length > 1) {
+                  const parallelNotice = JSON.stringify({
+                    type: "parallel_subagents",
+                    count: taskCalls.length,
+                    message: `Running ${taskCalls.length} subagents in parallel...`,
+                  });
+                  controller.enqueue(encoder.encode(`data: ${parallelNotice}\n\n`));
+                }
+
+                // Execute all task calls in parallel
+                const taskPromises = taskCalls.map((block) => {
+                  if (block.type === "tool_use") {
+                    return executeTool(
+                      block.name,
+                      block.id,
+                      block.input as Record<string, unknown>,
+                      config,
+                      updatedMemoryFiles,
+                      controller,
+                      encoder
+                    );
+                  }
+                  return Promise.resolve({ toolId: "", toolName: "", output: "" });
+                });
+
+                const taskResults = await Promise.all(taskPromises);
+                toolResults.push(...taskResults);
+              }
+
+              // Build tool result messages to send back to the model
+              const toolResultContent = toolResults.map((result) => ({
+                type: "tool_result" as const,
+                tool_use_id: result.toolId,
+                content: result.output,
+              }));
+
+              // Add assistant's response and tool results to conversation
+              conversationMessages = [
+                ...conversationMessages,
+                { role: "assistant" as const, content: response.content },
+                { role: "user" as const, content: toolResultContent },
+              ];
+
+              // Continue the loop to let the model process tool results
+              continueLoop = true;
+            } else {
+              // No tool calls - we're done
+              continueLoop = false;
+            }
+
+            // Check stop reason - if end_turn or stop, we're done
+            if (response.stop_reason === "end_turn" && toolUseBlocks.length === 0) {
+              continueLoop = false;
             }
           }
 
