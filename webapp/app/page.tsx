@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import Canvas from "./components/Canvas";
 
 interface Message {
   id: string;
@@ -9,10 +10,23 @@ interface Message {
   content: string;
 }
 
+interface CanvasState {
+  isOpen: boolean;
+  title: string;
+  content: string;
+  isStreaming: boolean;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [canvas, setCanvas] = useState<CanvasState>({
+    isOpen: false,
+    title: "",
+    content: "",
+    isStreaming: false,
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -48,6 +62,7 @@ export default function Home() {
             role: m.role,
             content: m.content,
           })),
+          canvasContent: canvas.content,
         }),
       });
 
@@ -77,10 +92,31 @@ export default function Home() {
           for (const line of lines) {
             if (line.startsWith("data: ")) {
               const data = line.slice(6);
-              if (data === "[DONE]") continue;
+              if (data === "[DONE]") {
+                // Mark canvas as done streaming
+                setCanvas((prev) => ({ ...prev, isStreaming: false }));
+                continue;
+              }
               try {
                 const parsed = JSON.parse(data);
-                if (parsed.content) {
+
+                // Handle canvas tool use
+                if (parsed.type === "canvas_create") {
+                  setCanvas({
+                    isOpen: true,
+                    title: parsed.title || "Untitled Document",
+                    content: "",
+                    isStreaming: true,
+                  });
+                } else if (parsed.type === "canvas_content") {
+                  setCanvas((prev) => ({
+                    ...prev,
+                    content: prev.content + parsed.content,
+                  }));
+                } else if (parsed.type === "canvas_done") {
+                  setCanvas((prev) => ({ ...prev, isStreaming: false }));
+                } else if (parsed.content) {
+                  // Regular chat content
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === assistantMessage.id
@@ -108,134 +144,168 @@ export default function Home() {
       ]);
     } finally {
       setIsLoading(false);
+      setCanvas((prev) => ({ ...prev, isStreaming: false }));
     }
   };
 
-  return (
-    <div style={styles.container}>
-      <header style={styles.header}>
-        <div style={styles.logo}>
-          <span style={styles.logoIcon}>🤖</span>
-          <h1 style={styles.title}>DeepAgents</h1>
-        </div>
-        <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
-      </header>
+  const handleCanvasClose = () => {
+    setCanvas((prev) => ({ ...prev, isOpen: false }));
+  };
 
-      <main style={styles.main}>
-        <div style={styles.chatContainer}>
-          {messages.length === 0 ? (
-            <div style={styles.emptyState}>
-              <div style={styles.emptyIcon}>💬</div>
-              <h2 style={styles.emptyTitle}>Start a conversation</h2>
-              <p style={styles.emptyText}>
-                Ask me anything! I&apos;m powered by Claude and the DeepAgents
-                framework.
-              </p>
-              <div style={styles.suggestions}>
-                <button
-                  style={styles.suggestionBtn}
-                  onClick={() =>
-                    setInput("What can you help me with?")
-                  }
-                >
-                  What can you help me with?
-                </button>
-                <button
-                  style={styles.suggestionBtn}
-                  onClick={() =>
-                    setInput("Tell me about the DeepAgents framework")
-                  }
-                >
-                  Tell me about DeepAgents
-                </button>
-                <button
-                  style={styles.suggestionBtn}
-                  onClick={() => setInput("Write a Python function to sort a list")}
-                >
-                  Write some code
-                </button>
+  const handleCanvasContentChange = (content: string) => {
+    setCanvas((prev) => ({ ...prev, content }));
+  };
+
+  const handleCanvasTitleChange = (title: string) => {
+    setCanvas((prev) => ({ ...prev, title }));
+  };
+
+  return (
+    <div style={styles.pageContainer}>
+      <div
+        style={{
+          ...styles.container,
+          width: canvas.isOpen ? "50%" : "100%",
+        }}
+      >
+        <header style={styles.header}>
+          <div style={styles.logo}>
+            <span style={styles.logoIcon}>🤖</span>
+            <h1 style={styles.title}>DeepAgents</h1>
+          </div>
+          <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
+        </header>
+
+        <main style={styles.main}>
+          <div style={styles.chatContainer}>
+            {messages.length === 0 ? (
+              <div style={styles.emptyState}>
+                <div style={styles.emptyIcon}>💬</div>
+                <h2 style={styles.emptyTitle}>Start a conversation</h2>
+                <p style={styles.emptyText}>
+                  Ask me anything! I&apos;m powered by Claude and the DeepAgents
+                  framework.
+                </p>
+                <div style={styles.suggestions}>
+                  <button
+                    style={styles.suggestionBtn}
+                    onClick={() =>
+                      setInput("What can you help me with?")
+                    }
+                  >
+                    What can you help me with?
+                  </button>
+                  <button
+                    style={styles.suggestionBtn}
+                    onClick={() =>
+                      setInput("Write me a blog post about AI agents")
+                    }
+                  >
+                    Write a blog post
+                  </button>
+                  <button
+                    style={styles.suggestionBtn}
+                    onClick={() => setInput("Create a project proposal for a mobile app")}
+                  >
+                    Create a proposal
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div style={styles.messages}>
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  style={{
-                    ...styles.messageRow,
-                    justifyContent:
-                      message.role === "user" ? "flex-end" : "flex-start",
-                  }}
-                >
+            ) : (
+              <div style={styles.messages}>
+                {messages.map((message) => (
                   <div
+                    key={message.id}
                     style={{
-                      ...styles.message,
-                      ...(message.role === "user"
-                        ? styles.userMessage
-                        : styles.assistantMessage),
+                      ...styles.messageRow,
+                      justifyContent:
+                        message.role === "user" ? "flex-end" : "flex-start",
                     }}
                   >
-                    {message.role === "assistant" ? (
-                      <div className="markdown-content">
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
-                      </div>
-                    ) : (
-                      message.content
-                    )}
-                  </div>
-                </div>
-              ))}
-              {isLoading && messages[messages.length - 1]?.role === "user" && (
-                <div style={{ ...styles.messageRow, justifyContent: "flex-start" }}>
-                  <div style={{ ...styles.message, ...styles.assistantMessage }}>
-                    <div style={styles.typingIndicator}>
-                      <span style={styles.dot}></span>
-                      <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
-                      <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
+                    <div
+                      style={{
+                        ...styles.message,
+                        ...(message.role === "user"
+                          ? styles.userMessage
+                          : styles.assistantMessage),
+                      }}
+                    >
+                      {message.role === "assistant" ? (
+                        <div className="markdown-content">
+                          <ReactMarkdown>{message.content}</ReactMarkdown>
+                        </div>
+                      ) : (
+                        message.content
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </div>
-
-        <form onSubmit={handleSubmit} style={styles.inputForm}>
-          <div style={styles.inputContainer}>
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Type your message..."
-              style={styles.input}
-              disabled={isLoading}
-            />
-            <button
-              type="submit"
-              style={{
-                ...styles.sendButton,
-                opacity: isLoading || !input.trim() ? 0.5 : 1,
-              }}
-              disabled={isLoading || !input.trim()}
-            >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-            </button>
+                ))}
+                {isLoading && messages[messages.length - 1]?.role === "user" && (
+                  <div style={{ ...styles.messageRow, justifyContent: "flex-start" }}>
+                    <div style={{ ...styles.message, ...styles.assistantMessage }}>
+                      <div style={styles.typingIndicator}>
+                        <span style={styles.dot}></span>
+                        <span style={{ ...styles.dot, animationDelay: "0.2s" }}></span>
+                        <span style={{ ...styles.dot, animationDelay: "0.4s" }}></span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
           </div>
-        </form>
-      </main>
+
+          <form onSubmit={handleSubmit} style={styles.inputForm}>
+            <div style={styles.inputContainer}>
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Type your message..."
+                style={styles.input}
+                disabled={isLoading}
+              />
+              <button
+                type="submit"
+                style={{
+                  ...styles.sendButton,
+                  opacity: isLoading || !input.trim() ? 0.5 : 1,
+                }}
+                disabled={isLoading || !input.trim()}
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </div>
+          </form>
+        </main>
+      </div>
+
+      {canvas.isOpen && (
+        <div style={styles.canvasWrapper}>
+          <Canvas
+            content={canvas.content}
+            title={canvas.title}
+            isOpen={canvas.isOpen}
+            isStreaming={canvas.isStreaming}
+            onClose={handleCanvasClose}
+            onContentChange={handleCanvasContentChange}
+            onTitleChange={handleCanvasTitleChange}
+          />
+        </div>
+      )}
 
       <style jsx global>{`
         @keyframes blink {
@@ -253,10 +323,21 @@ export default function Home() {
 }
 
 const styles: { [key: string]: React.CSSProperties } = {
-  container: {
+  pageContainer: {
+    display: "flex",
     minHeight: "100vh",
+    width: "100%",
+  },
+  container: {
     display: "flex",
     flexDirection: "column",
+    transition: "width 0.3s ease",
+  },
+  canvasWrapper: {
+    width: "50%",
+    height: "100vh",
+    position: "sticky",
+    top: 0,
   },
   header: {
     padding: "1rem 2rem",
