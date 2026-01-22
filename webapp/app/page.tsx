@@ -393,75 +393,120 @@ export default function Home() {
           marginLeft: "48px", // Account for collapsed settings sidebar
         }}
       >
-        <header style={styles.header}>
-          <div style={styles.headerContent}>
-            <div style={styles.logo}>
-              <span style={styles.logoIcon}>🤖</span>
-              <h1 style={styles.title}>DeepAgents</h1>
+        {messages.length > 0 && (
+          <header style={styles.header}>
+            <div style={styles.headerContent}>
+              <div style={styles.logo}>
+                <span style={styles.logoIcon}>🤖</span>
+                <h1 style={styles.title}>DeepAgents</h1>
+              </div>
+              <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
             </div>
-            <p style={styles.subtitle}>AI Agent Framework Chat Interface</p>
-          </div>
-          {/* Activity toggle button */}
-          <button
-            onClick={() => setActivitySidebarOpen(!activitySidebarOpen)}
-            style={{
-              ...styles.activityToggle,
-              ...(toolActivities.some((a) => a.status === "running")
-                ? styles.activityToggleActive
-                : {}),
-            }}
-            title={activitySidebarOpen ? "Hide activity" : "Show activity"}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            {/* Activity toggle button */}
+            <button
+              onClick={() => setActivitySidebarOpen(!activitySidebarOpen)}
+              style={{
+                ...styles.activityToggle,
+                ...(toolActivities.some((a) => a.status === "running")
+                  ? styles.activityToggleActive
+                  : {}),
+              }}
+              title={activitySidebarOpen ? "Hide activity" : "Show activity"}
             >
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-            </svg>
-            {toolActivities.length > 0 && (
-              <span style={styles.activityBadge}>{toolActivities.length}</span>
-            )}
-          </button>
-        </header>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+              </svg>
+              {toolActivities.length > 0 && (
+                <span style={styles.activityBadge}>{toolActivities.length}</span>
+              )}
+            </button>
+          </header>
+        )}
 
         <main style={styles.main}>
           <div style={styles.chatContainer}>
             {messages.length === 0 ? (
-              <div style={styles.emptyState}>
-                <div style={styles.emptyIcon}>💬</div>
-                <h2 style={styles.emptyTitle}>Start a conversation</h2>
-                <p style={styles.emptyText}>
-                  Ask me anything! I&apos;m powered by Claude and the DeepAgents
-                  framework.
-                </p>
-                <div style={styles.suggestions}>
+              <div style={styles.landingContainer}>
+                <h1 style={styles.landingTitle}>Give me something to do</h1>
+                <form onSubmit={handleSubmit} style={styles.landingInputForm}>
+                  <div style={styles.landingInputContainer}>
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Assign a task or ask anything"
+                      style={styles.landingInput}
+                      disabled={isLoading}
+                    />
+                    <div style={styles.landingInputActions}>
+                      <button
+                        type="submit"
+                        style={{
+                          ...styles.landingSendButton,
+                          opacity: isLoading || !input.trim() ? 0.3 : 1,
+                        }}
+                        disabled={isLoading || !input.trim()}
+                      >
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <line x1="12" y1="19" x2="12" y2="5"></line>
+                          <polyline points="5 12 12 5 19 12"></polyline>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </form>
+                <div style={styles.landingSuggestions}>
                   <button
-                    style={styles.suggestionBtn}
-                    onClick={() =>
-                      setInput("What can you help me with?")
-                    }
+                    style={styles.landingSuggestionBtn}
+                    onClick={() => setInput("Write me a blog post about AI agents")}
                   >
-                    What can you help me with?
+                    <span style={styles.suggestionIcon}>📝</span>
+                    Create slides
                   </button>
                   <button
-                    style={styles.suggestionBtn}
-                    onClick={() =>
-                      setInput("Write me a blog post about AI agents")
-                    }
+                    style={styles.landingSuggestionBtn}
+                    onClick={() => setInput("Build a website landing page")}
                   >
-                    Write a blog post
+                    <span style={styles.suggestionIcon}>🌐</span>
+                    Build website
                   </button>
                   <button
-                    style={styles.suggestionBtn}
-                    onClick={() => setInput("Create a project proposal for a mobile app")}
+                    style={styles.landingSuggestionBtn}
+                    onClick={() => setInput("Help me develop an app idea")}
                   >
-                    Create a proposal
+                    <span style={styles.suggestionIcon}>📱</span>
+                    Develop apps
+                  </button>
+                  <button
+                    style={styles.landingSuggestionBtn}
+                    onClick={() => setInput("Create a design for my project")}
+                  >
+                    <span style={styles.suggestionIcon}>✨</span>
+                    Design
+                  </button>
+                  <button
+                    style={styles.landingSuggestionBtn}
+                    onClick={() => setInput("What can you help me with?")}
+                  >
+                    More
                   </button>
                 </div>
               </div>
@@ -538,40 +583,42 @@ export default function Home() {
             )}
           </div>
 
-          <form onSubmit={handleSubmit} style={styles.inputForm}>
-            <div style={styles.inputContainer}>
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Type your message..."
-                style={styles.input}
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                style={{
-                  ...styles.sendButton,
-                  opacity: isLoading || !input.trim() ? 0.5 : 1,
-                }}
-                disabled={isLoading || !input.trim()}
-              >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+          {messages.length > 0 && (
+            <form onSubmit={handleSubmit} style={styles.inputForm}>
+              <div style={styles.inputContainer}>
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Type your message..."
+                  style={styles.input}
+                  disabled={isLoading}
+                />
+                <button
+                  type="submit"
+                  style={{
+                    ...styles.sendButton,
+                    opacity: isLoading || !input.trim() ? 0.5 : 1,
+                  }}
+                  disabled={isLoading || !input.trim()}
                 >
-                  <line x1="22" y1="2" x2="11" y2="13"></line>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-              </button>
-            </div>
-          </form>
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                </button>
+              </div>
+            </form>
+          )}
         </main>
       </div>
 
@@ -788,6 +835,87 @@ const styles: { [key: string]: React.CSSProperties } = {
     flex: 1,
     overflowY: "auto",
     paddingBottom: "1rem",
+  },
+  landingContainer: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    minHeight: "60vh",
+    textAlign: "center",
+    padding: "2rem",
+  },
+  landingTitle: {
+    fontSize: "2.5rem",
+    fontWeight: 500,
+    marginBottom: "2rem",
+    color: "var(--foreground)",
+    letterSpacing: "-0.02em",
+  },
+  landingInputForm: {
+    width: "100%",
+    maxWidth: "700px",
+    marginBottom: "1.5rem",
+  },
+  landingInputContainer: {
+    display: "flex",
+    alignItems: "center",
+    background: "var(--card)",
+    border: "1px solid var(--border)",
+    borderRadius: "16px",
+    padding: "0.75rem 1rem",
+    transition: "border-color 0.2s, box-shadow 0.2s",
+  },
+  landingInput: {
+    flex: 1,
+    background: "transparent",
+    border: "none",
+    color: "var(--foreground)",
+    fontSize: "1rem",
+    padding: "0.5rem",
+    outline: "none",
+  },
+  landingInputActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  landingSendButton: {
+    width: "36px",
+    height: "36px",
+    borderRadius: "50%",
+    background: "var(--foreground)",
+    border: "none",
+    color: "var(--background)",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "opacity 0.2s",
+  },
+  landingSuggestions: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "0.75rem",
+    justifyContent: "center",
+    marginTop: "0.5rem",
+  },
+  landingSuggestionBtn: {
+    padding: "0.625rem 1.25rem",
+    background: "transparent",
+    border: "1px solid var(--border)",
+    borderRadius: "24px",
+    color: "var(--foreground)",
+    cursor: "pointer",
+    fontSize: "0.875rem",
+    transition: "all 0.2s",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  suggestionIcon: {
+    fontSize: "1rem",
   },
   emptyState: {
     display: "flex",
