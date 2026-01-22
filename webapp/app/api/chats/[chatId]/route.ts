@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import prisma from "../../../../lib/prisma";
+import prisma from "@/lib/prisma";
 
 // GET /api/chats/[chatId] - Get a specific chat
 export async function GET(
