@@ -42,10 +42,17 @@ export default function TriggersPanel() {
                 <button
                   key={tt.type}
                   onClick={() => {
+                    const config = tt.type === "manual"
+                      ? { type: "manual" as const }
+                      : tt.type === "scheduled"
+                      ? { type: "scheduled" as const, cron: "" }
+                      : tt.type === "webhook"
+                      ? { type: "webhook" as const }
+                      : { type: "app_event" as const, appName: "", eventType: "" };
                     addTrigger({
                       triggerType: tt.type,
                       name: `${tt.label} Trigger`,
-                      config: { type: tt.type },
+                      config,
                     });
                     setShowAddMenu(false);
                   }}
